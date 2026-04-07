@@ -209,11 +209,12 @@ class DriverProfileUpdateSerializer(serializers.Serializer):
 
 
 class FabricSerializer(serializers.ModelSerializer):
+    images = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
     uploaded_by = serializers.IntegerField(source='uploaded_by_id', read_only=True)
 
     class Meta:
         model = Fabric
-        fields = ['id', 'material', 'color', 'price', 'image', 'shop', 'description', 'uploaded_by', 'is_active']
+        fields = ['id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'uploaded_by', 'is_active']
         read_only_fields = ['uploaded_by']
 
     def _build_normalized_data(self, validated_data, user):
@@ -224,12 +225,17 @@ class FabricSerializer(serializers.ModelSerializer):
         shop = normalized_data.get('shop', '')
         description = normalized_data.get('description', '')
         image = normalized_data.get('image', '')
+        images = normalized_data.get('images', [])
 
         normalized_data['material'] = material.strip()
         normalized_data['color'] = color.strip()
         normalized_data['shop'] = shop.strip()
         normalized_data['description'] = description.strip()
         normalized_data['image'] = image.strip()
+        normalized_data['images'] = [str(item).strip() for item in images if str(item).strip()]
+
+        if normalized_data['images'] and not normalized_data['image']:
+            normalized_data['image'] = normalized_data['images'][0]
 
         if user and getattr(user, 'is_authenticated', False):
             normalized_data['uploaded_by'] = user
@@ -249,6 +255,7 @@ class FabricSerializer(serializers.ModelSerializer):
             color__iexact=normalized_data['color'],
             price=normalized_data['price'],
             image=normalized_data['image'],
+            images=normalized_data['images'],
             description=normalized_data['description'],
             is_active=normalized_data.get('is_active', True),
         )
@@ -269,6 +276,12 @@ class FabricSerializer(serializers.ModelSerializer):
             return existing_fabric
 
         return super().create(normalized_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        normalized_data = self._build_normalized_data(validated_data, user)
+        return super().update(instance, normalized_data)
 
 
 class DesignSerializer(serializers.ModelSerializer):
@@ -408,8 +421,11 @@ class OrderSerializer(serializers.ModelSerializer):
     tailor_phone = serializers.CharField(source='tailor.phone', read_only=True)
     design_name = serializers.CharField(source='design.title', read_only=True)
     design_image = serializers.CharField(source='design.image', read_only=True)
+    design_images = serializers.ListField(source='design.images', child=serializers.CharField(), read_only=True)
     fabric_name = serializers.CharField(source='fabric.material', read_only=True)
     fabric_color = serializers.CharField(source='fabric.color', read_only=True)
+    fabric_image = serializers.CharField(source='fabric.image', read_only=True)
+    fabric_images = serializers.ListField(source='fabric.images', child=serializers.CharField(), read_only=True)
     customer_name = serializers.CharField(source='customer.full_name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
     measurement = MeasurementSerializer(read_only=True)
@@ -429,9 +445,12 @@ class OrderSerializer(serializers.ModelSerializer):
             'design',
             'design_name',
             'design_image',
+            'design_images',
             'fabric',
             'fabric_name',
             'fabric_color',
+            'fabric_image',
+            'fabric_images',
             'measurement',
             'garment_type',
             'notes',
@@ -457,6 +476,12 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context['request'].user
+        if not validated_data.get('measurement'):
+            validated_data['measurement'] = (
+                MeasurementProfile.objects.filter(customer=user, is_default=True).first()
+                or MeasurementProfile.objects.filter(customer=user).order_by('-created_at').first()
+            )
+
         if not validated_data.get('tailor'):
             featured_tailor = User.objects.filter(
                 role=User.Role.TAILOR,

@@ -117,6 +117,7 @@ class Fabric(models.Model):
     color = models.CharField(max_length=120)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     image = models.TextField(blank=True)
+    images = models.JSONField(default=list, blank=True)
     shop = models.CharField(max_length=150, blank=True)
     description = models.TextField(blank=True)
     uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='uploaded_fabrics')
