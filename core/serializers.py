@@ -428,7 +428,7 @@ class OrderSerializer(serializers.ModelSerializer):
     fabric_images = serializers.ListField(source='fabric.images', child=serializers.CharField(), read_only=True)
     customer_name = serializers.CharField(source='customer.full_name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
-    measurement = MeasurementSerializer(read_only=True)
+    measurement = serializers.SerializerMethodField()
     delivery = serializers.SerializerMethodField()
 
     class Meta:
@@ -473,6 +473,15 @@ class OrderSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return None
         return DeliverySerializer(delivery).data
+
+    def get_measurement(self, obj):
+        measurement = obj.measurement
+        if measurement is None:
+            measurement = (
+                MeasurementProfile.objects.filter(customer=obj.customer, is_default=True).first()
+                or MeasurementProfile.objects.filter(customer=obj.customer).order_by('-created_at').first()
+            )
+        return MeasurementSerializer(measurement).data if measurement else None
 
     def create(self, validated_data):
         user = self.context['request'].user
