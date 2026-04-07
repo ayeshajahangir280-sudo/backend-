@@ -491,6 +491,9 @@ class OrderSerializer(serializers.ModelSerializer):
                 or MeasurementProfile.objects.filter(customer=user).order_by('-created_at').first()
             )
 
+        if not validated_data.get('delivery_address'):
+            validated_data['delivery_address'] = (user.address or '').strip()
+
         if not validated_data.get('tailor'):
             featured_tailor = User.objects.filter(
                 role=User.Role.TAILOR,
