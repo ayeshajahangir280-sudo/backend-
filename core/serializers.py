@@ -58,13 +58,28 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):
-        identifier = (attrs.get('username') or attrs.get('email') or '').strip()
-        if not identifier:
+        username = (attrs.get('username') or '').strip()
+        email = (attrs.get('email') or '').strip()
+        password = attrs['password']
+
+        if username:
+            user = User.objects.filter(username__iexact=username).first()
+            if not user:
+                raise serializers.ValidationError('Invalid username or password.')
+            if not user.is_active or not user.check_password(password):
+                raise serializers.ValidationError('Invalid username or password.')
+            attrs['user'] = user
+            return attrs
+
+        if not email:
             raise serializers.ValidationError('Username or email is required.')
 
-        user_obj = User.objects.filter(Q(username__iexact=identifier) | Q(email__iexact=identifier)).first()
-        auth_username = user_obj.email if user_obj else identifier
-        user = authenticate(username=auth_username, password=attrs['password'])
+        user_obj = User.objects.filter(email__iexact=email).first()
+        if user_obj and user_obj.is_staff:
+            raise serializers.ValidationError('Admin accounts must log in with username.')
+
+        auth_username = user_obj.email if user_obj else email
+        user = authenticate(username=auth_username, password=password)
         if not user:
             raise serializers.ValidationError('Invalid username/email or password.')
         attrs['user'] = user
