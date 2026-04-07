@@ -22,7 +22,7 @@ load_env_file(BASE_DIR / '.env')
 
 SECRET_KEY = 'django-insecure-lj$&=)6@*3s+u%m8!&1@=bfm5g--ig4+2=u!g%v^p@l(t46ms7'
 DEBUG = True
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
+ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
