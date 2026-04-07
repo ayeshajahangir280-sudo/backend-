@@ -8,7 +8,8 @@ class UserManager(BaseUserManager):
         if not email:
             raise ValueError('Email is required.')
         email = self.normalize_email(email)
-        user = self.model(email=email, username=email, **extra_fields)
+        username = extra_fields.pop('username', '') or email
+        user = self.model(email=email, username=username, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
@@ -46,7 +47,8 @@ class User(AbstractUser):
     objects = UserManager()
 
     def save(self, *args, **kwargs):
-        self.username = self.email
+        if not self.username:
+            self.username = self.email
         super().save(*args, **kwargs)
 
     def __str__(self):
