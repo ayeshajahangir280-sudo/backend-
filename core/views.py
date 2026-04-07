@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -482,6 +483,40 @@ class AdminOverviewView(APIView):
                     'designs': Design.objects.count(),
                 }
             }
+        )
+
+
+class AdminResetTestDataView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def post(self, request):
+        protected_admin_id = request.user.id
+
+        with transaction.atomic():
+            deleted_counts = {
+                'deliveries': Delivery.objects.count(),
+                'orders': Order.objects.count(),
+                'measurements': MeasurementProfile.objects.count(),
+                'fabrics': Fabric.objects.count(),
+                'designs': Design.objects.count(),
+                'tailors': User.objects.filter(role=User.Role.TAILOR).count(),
+                'drivers': User.objects.filter(role=User.Role.DRIVER).count(),
+                'customers': User.objects.filter(role=User.Role.CUSTOMER).count(),
+            }
+
+            Delivery.objects.all().delete()
+            Order.objects.all().delete()
+            MeasurementProfile.objects.all().delete()
+            Fabric.objects.all().delete()
+            Design.objects.all().delete()
+            User.objects.exclude(id=protected_admin_id).delete()
+
+        return Response(
+            {
+                'detail': 'All test data deleted successfully. The current admin account was kept.',
+                'deleted': deleted_counts,
+            },
+            status=status.HTTP_200_OK,
         )
 
 
