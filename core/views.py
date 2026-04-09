@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Prefetch
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -13,6 +14,7 @@ from .permissions import IsCustomer, IsDriver, IsTailor
 from .serializers import (
     AdminAssignDriverSerializer,
     AdminDriverDetailSerializer,
+    AdminOrderListSerializer,
     AdminOrderDetailSerializer,
     AdminTailorDetailSerializer,
     DashboardSerializer,
@@ -131,10 +133,10 @@ class CustomerDashboardView(APIView):
 
     def get(self, request):
         payload = {
-            'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True)[:10],
+            'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True).select_related('user')[:10],
             'fabrics': Fabric.objects.filter(is_active=True)[:10],
             'measurements': MeasurementProfile.objects.filter(customer=request.user)[:10],
-            'recent_orders': Order.objects.filter(customer=request.user).select_related('tailor', 'design', 'fabric', 'measurement', 'delivery')[:10],
+            'recent_orders': Order.objects.filter(customer=request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver')[:10],
             'designs': Design.objects.filter(is_active=True)[:10],
         }
         return Response(DashboardSerializer(payload).data)
@@ -521,7 +523,12 @@ class AdminResetTestDataView(APIView):
 
 
 class AdminTailorViewSet(viewsets.ModelViewSet):
-    queryset = TailorProfile.objects.select_related('user').annotate(active_orders=Count('user__tailor_orders'))
+    queryset = TailorProfile.objects.select_related('user').annotate(active_orders=Count('user__tailor_orders')).prefetch_related(
+        Prefetch(
+            'user__tailor_orders',
+            queryset=Order.objects.select_related('customer').order_by('-created_at'),
+        )
+    )
     serializer_class = AdminTailorDetailSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
     lookup_field = 'user_id'
@@ -529,7 +536,12 @@ class AdminTailorViewSet(viewsets.ModelViewSet):
 
 
 class AdminDriverViewSet(viewsets.ModelViewSet):
-    queryset = DriverProfile.objects.select_related('user').annotate(active_deliveries=Count('user__deliveries'))
+    queryset = DriverProfile.objects.select_related('user').annotate(active_deliveries=Count('user__deliveries')).prefetch_related(
+        Prefetch(
+            'user__deliveries',
+            queryset=Delivery.objects.select_related('order', 'order__customer', 'order__tailor').order_by('-assigned_date', '-id'),
+        )
+    )
     serializer_class = AdminDriverDetailSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
     lookup_field = 'user_id'
@@ -550,7 +562,7 @@ class AdminDesignViewSet(viewsets.ModelViewSet):
 
 class AdminOrderListView(generics.ListAPIView):
     queryset = Order.objects.select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver').all()
-    serializer_class = AdminOrderDetailSerializer
+    serializer_class = AdminOrderListSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
 

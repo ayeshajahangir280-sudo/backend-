@@ -20,8 +20,8 @@ def load_env_file(env_path: Path) -> None:
 
 load_env_file(BASE_DIR / '.env')
 
-SECRET_KEY = 'django-insecure-lj$&=)6@*3s+u%m8!&1@=bfm5g--ig4+2=u!g%v^p@l(t46ms7'
-DEBUG = True
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-lj$&=)6@*3s+u%m8!&1@=bfm5g--ig4+2=u!g%v^p@l(t46ms7')
+DEBUG = os.getenv('DEBUG', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -110,6 +110,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'core.User'
 
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOW_HEADERS = ['*']
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 

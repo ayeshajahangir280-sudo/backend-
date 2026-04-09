@@ -552,7 +552,7 @@ class AdminTailorDetailSerializer(TailorProfileSerializer):
         fields = TailorProfileSerializer.Meta.fields + ['active_orders', 'recent_orders']
 
     def get_recent_orders(self, obj):
-        orders = obj.user.tailor_orders.all().select_related('customer')[:5]
+        orders = list(obj.user.tailor_orders.all()[:5])
         return AdminTailorOrderSummarySerializer(orders, many=True).data
 
 
@@ -564,8 +564,58 @@ class AdminDriverDetailSerializer(DriverProfileSerializer):
         fields = DriverProfileSerializer.Meta.fields + ['active_deliveries', 'recent_deliveries']
 
     def get_recent_deliveries(self, obj):
-        deliveries = obj.user.deliveries.all().select_related('order', 'order__customer', 'order__tailor')[:5]
+        deliveries = list(obj.user.deliveries.all()[:5])
         return AdminDriverDeliverySummarySerializer(deliveries, many=True).data
+
+
+class AdminOrderListSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_phone = serializers.CharField(read_only=True)
+    tailor_name = serializers.CharField(source='tailor.full_name', read_only=True)
+    tailor_phone = serializers.CharField(source='tailor.phone', read_only=True)
+    design_name = serializers.CharField(source='design.title', read_only=True)
+    fabric_name = serializers.CharField(source='fabric.material', read_only=True)
+    fabric_color = serializers.CharField(source='fabric.color', read_only=True)
+    assigned_driver_name = serializers.SerializerMethodField()
+    assigned_driver_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            'id',
+            'customer_name',
+            'customer_phone',
+            'tailor_name',
+            'tailor_phone',
+            'design_name',
+            'fabric_name',
+            'fabric_color',
+            'status',
+            'payment_method',
+            'payment_status',
+            'subtotal',
+            'delivery_fee',
+            'total',
+            'delivery_address',
+            'notes',
+            'created_at',
+            'assigned_driver_name',
+            'assigned_driver_id',
+        ]
+
+    def get_assigned_driver_name(self, obj):
+        try:
+            delivery = obj.delivery
+        except ObjectDoesNotExist:
+            return None
+        return delivery.driver.full_name if delivery.driver else None
+
+    def get_assigned_driver_id(self, obj):
+        try:
+            delivery = obj.delivery
+        except ObjectDoesNotExist:
+            return None
+        return delivery.driver.id if delivery.driver else None
 
 
 class AdminOrderDetailSerializer(OrderSerializer):
