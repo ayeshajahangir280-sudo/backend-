@@ -31,6 +31,7 @@ from .serializers import (
     SignupSerializer,
     TailorShopCatalogSerializer,
     TailorShopSetupSerializer,
+    TailorOrderDetailSerializer,
     TailorProfileSerializer,
     UserSerializer,
     build_auth_payload,
@@ -326,7 +327,7 @@ class TailorOrderListView(generics.ListAPIView):
 
 
 class TailorOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
-    serializer_class = OrderSerializer
+    serializer_class = TailorOrderDetailSerializer
     permission_classes = [permissions.IsAuthenticated, IsTailor]
 
     def get_queryset(self):

@@ -530,6 +530,71 @@ class OrderSerializer(serializers.ModelSerializer):
         return order
 
 
+class TailorOrderDetailSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_phone = serializers.CharField(read_only=True)
+    design_name = serializers.CharField(source='design.title', read_only=True)
+    design_image = serializers.SerializerMethodField()
+    fabric_name = serializers.CharField(source='fabric.material', read_only=True)
+    fabric_color = serializers.CharField(source='fabric.color', read_only=True)
+    fabric_image = serializers.SerializerMethodField()
+    measurement = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            'id',
+            'customer_name',
+            'customer_phone',
+            'design_name',
+            'design_image',
+            'fabric_name',
+            'fabric_color',
+            'fabric_image',
+            'measurement',
+            'garment_type',
+            'notes',
+            'status',
+            'total',
+            'created_at',
+            'updated_at',
+        ]
+
+    @staticmethod
+    def _is_inline_image(value):
+        return isinstance(value, str) and value.strip().lower().startswith('data:')
+
+    def _pick_public_image(self, primary_image, image_list):
+        if primary_image and not self._is_inline_image(primary_image):
+            return primary_image
+
+        for image in image_list or []:
+            if image and not self._is_inline_image(image):
+                return image
+        return ''
+
+    def get_design_image(self, obj):
+        design = obj.design
+        if not design:
+            return ''
+        return self._pick_public_image(design.image, getattr(design, 'images', []))
+
+    def get_fabric_image(self, obj):
+        fabric = obj.fabric
+        if not fabric:
+            return ''
+        return self._pick_public_image(fabric.image, getattr(fabric, 'images', []))
+
+    def get_measurement(self, obj):
+        measurement = obj.measurement
+        if measurement is None:
+            measurement = (
+                MeasurementProfile.objects.filter(customer=obj.customer, is_default=True).first()
+                or MeasurementProfile.objects.filter(customer=obj.customer).order_by('-created_at').first()
+            )
+        return MeasurementSerializer(measurement).data if measurement else None
+
+
 class DashboardSerializer(serializers.Serializer):
     top_tailors = TailorProfileSerializer(many=True)
     fabrics = FabricSerializer(many=True)
