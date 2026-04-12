@@ -9,6 +9,29 @@ from rest_framework.authtoken.models import Token
 from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User
 
 
+def is_inline_image(value):
+    return isinstance(value, str) and value.strip().lower().startswith('data:')
+
+
+def get_public_image(primary_image, image_list):
+    if primary_image and not is_inline_image(primary_image):
+        return primary_image
+
+    for image in image_list or []:
+        if image and not is_inline_image(image):
+            return image
+    return ''
+
+
+def get_public_images(primary_image, image_list):
+    public_images = [image for image in (image_list or []) if image and not is_inline_image(image)]
+    fallback_image = primary_image if primary_image and not is_inline_image(primary_image) else ''
+
+    if fallback_image and fallback_image not in public_images:
+        return [fallback_image, *public_images]
+    return public_images
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -118,6 +141,11 @@ class TailorProfileSerializer(serializers.ModelSerializer):
             'iban',
         ]
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        representation['image'] = '' if is_inline_image(representation.get('image')) else representation.get('image', '')
+        return representation
+
 
 class TailorShopSetupSerializer(serializers.Serializer):
     full_name = serializers.CharField(required=False, allow_blank=False, max_length=255)
@@ -217,6 +245,13 @@ class FabricSerializer(serializers.ModelSerializer):
         fields = ['id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'uploaded_by', 'is_active']
         read_only_fields = ['uploaded_by']
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        public_images = get_public_images(representation.get('image'), representation.get('images'))
+        representation['image'] = get_public_image(representation.get('image'), public_images)
+        representation['images'] = public_images
+        return representation
+
     def _build_normalized_data(self, validated_data, user):
         normalized_data = dict(validated_data)
 
@@ -304,6 +339,13 @@ class DesignSerializer(serializers.ModelSerializer):
             'created_at',
         ]
         read_only_fields = ['uploaded_by', 'created_at']
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        public_images = get_public_images(representation.get('image'), representation.get('images'))
+        representation['image'] = get_public_image(representation.get('image'), public_images)
+        representation['images'] = public_images
+        return representation
 
     def create(self, validated_data):
         images = validated_data.pop('images', [])
@@ -428,6 +470,13 @@ class OrderSerializer(serializers.ModelSerializer):
     fabric_images = serializers.ListField(source='fabric.images', child=serializers.CharField(), read_only=True)
     customer_name = serializers.CharField(source='customer.full_name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
+    measurement_id = serializers.PrimaryKeyRelatedField(
+        queryset=MeasurementProfile.objects.all(),
+        source='measurement',
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
     measurement = serializers.SerializerMethodField()
     delivery = serializers.SerializerMethodField()
 
@@ -451,6 +500,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'fabric_color',
             'fabric_image',
             'fabric_images',
+            'measurement_id',
             'measurement',
             'garment_type',
             'notes',
@@ -466,6 +516,23 @@ class OrderSerializer(serializers.ModelSerializer):
             'delivery',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'customer']
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        measurement = attrs.get('measurement')
+        tailor = attrs.get('tailor')
+
+        if measurement and user and measurement.customer_id != user.id:
+            raise serializers.ValidationError({'measurement_id': 'You can only use your own saved measurements.'})
+
+        if tailor and tailor.role != User.Role.TAILOR:
+            raise serializers.ValidationError({'tailor': 'Selected user is not a tailor.'})
+
+        if tailor and hasattr(tailor, 'tailor_profile') and not tailor.tailor_profile.is_active:
+            raise serializers.ValidationError({'tailor': 'Selected tailor is not accepting orders right now.'})
+
+        return attrs
 
     def get_delivery(self, obj):
         try:
@@ -529,6 +596,16 @@ class OrderSerializer(serializers.ModelSerializer):
         )
         return order
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
+        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
+        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        representation['design_images'] = design_images
+        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_images'] = fabric_images
+        return representation
+
 
 class TailorOrderDetailSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.full_name', read_only=True)
@@ -562,7 +639,7 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _is_inline_image(value):
-        return isinstance(value, str) and value.strip().lower().startswith('data:')
+        return is_inline_image(value)
 
     def _pick_public_image(self, primary_image, image_list):
         if primary_image and not self._is_inline_image(primary_image):
