@@ -1,3 +1,6 @@
+import hashlib
+
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Prefetch
 from django.db.models import Count
@@ -37,6 +40,10 @@ from .serializers import (
     build_auth_payload,
 )
 
+CACHE_VERSION_KEY = 'api-cache-version'
+PUBLIC_CACHE_TTL = 120
+USER_CACHE_TTL = 60
+
 
 TAILOR_STATUS_FLOW = {
     Order.Status.PLACED: {Order.Status.RECEIVED, Order.Status.ACCEPTED, Order.Status.REJECTED},
@@ -63,6 +70,34 @@ ADMIN_STATUS_FLOW = {
     Order.Status.DELIVERED: set(),
     Order.Status.CANCELLED: set(),
 }
+
+
+def get_api_cache_version():
+    return cache.get_or_set(CACHE_VERSION_KEY, 1, None)
+
+
+def build_api_cache_key(namespace, *parts):
+    digest = hashlib.sha256('||'.join(str(part) for part in parts).encode('utf-8')).hexdigest()
+    return f'api:{namespace}:v{get_api_cache_version()}:{digest}'
+
+
+def cached_response(namespace, request, ttl, builder, *, user_scoped=False):
+    user_part = request.user.id if user_scoped and getattr(request.user, 'is_authenticated', False) else 'anon'
+    cache_key = build_api_cache_key(namespace, request.get_full_path(), user_part)
+    cached_payload = cache.get(cache_key)
+    if cached_payload is not None:
+        return Response(cached_payload)
+
+    payload = builder()
+    cache.set(cache_key, payload, ttl)
+    return Response(payload)
+
+
+def invalidate_api_cache():
+    try:
+        cache.incr(CACHE_VERSION_KEY)
+    except ValueError:
+        cache.set(CACHE_VERSION_KEY, 2, None)
 
 
 def normalize_order_status(status_value):
@@ -126,6 +161,7 @@ class ProfileView(APIView):
                 setattr(user, field, str(request.data.get(field, '')).strip())
 
         user.save(update_fields=[field for field in allowed_fields if field in request.data] or None)
+        invalidate_api_cache()
         return Response(UserSerializer(user).data)
 
 
@@ -133,14 +169,21 @@ class CustomerDashboardView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsCustomer]
 
     def get(self, request):
-        payload = {
-            'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True).select_related('user')[:10],
-            'fabrics': Fabric.objects.filter(is_active=True)[:10],
-            'measurements': MeasurementProfile.objects.filter(customer=request.user)[:10],
-            'recent_orders': Order.objects.filter(customer=request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver')[:10],
-            'designs': Design.objects.filter(is_active=True)[:10],
-        }
-        return Response(DashboardSerializer(payload).data)
+        return cached_response(
+            'customer-dashboard',
+            request,
+            USER_CACHE_TTL,
+            lambda: DashboardSerializer(
+                {
+                    'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True).select_related('user')[:10],
+                    'fabrics': Fabric.objects.filter(is_active=True).order_by('-created_at')[:10],
+                    'measurements': MeasurementProfile.objects.filter(customer=request.user)[:10],
+                    'recent_orders': Order.objects.filter(customer=request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver')[:10],
+                    'designs': Design.objects.filter(is_active=True).order_by('-created_at')[:10],
+                }
+            ).data,
+            user_scoped=True,
+        )
 
 
 class TailorListView(generics.ListAPIView):
@@ -154,6 +197,14 @@ class TailorListView(generics.ListAPIView):
             queryset = queryset.filter(is_featured=True)
         return queryset
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'tailor-list',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+        )
+
 
 class TailorDetailView(generics.RetrieveAPIView):
     queryset = TailorProfile.objects.filter(is_active=True).select_related('user')
@@ -162,21 +213,32 @@ class TailorDetailView(generics.RetrieveAPIView):
     lookup_field = 'user_id'
     lookup_url_kwarg = 'pk'
 
+    def retrieve(self, request, *args, **kwargs):
+        return cached_response(
+            'tailor-detail',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_object()).data,
+        )
+
 
 class TailorShopCatalogView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, pk):
-        tailor = get_object_or_404(
-            TailorProfile.objects.filter(is_active=True).select_related('user'),
-            user_id=pk,
-        )
-        payload = {
-            'tailor': tailor,
-            'fabrics': Fabric.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
-            'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
-        }
-        return Response(TailorShopCatalogSerializer(payload).data)
+        def build_payload():
+            tailor = get_object_or_404(
+                TailorProfile.objects.filter(is_active=True).select_related('user'),
+                user_id=pk,
+            )
+            payload = {
+                'tailor': tailor,
+                'fabrics': Fabric.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
+                'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
+            }
+            return TailorShopCatalogSerializer(payload).data
+
+        return cached_response('tailor-catalog', request, PUBLIC_CACHE_TTL, build_payload)
 
 
 class TailorMeView(APIView):
@@ -188,13 +250,20 @@ class TailorMeView(APIView):
 
     def get(self, request):
         profile = self.get_profile(request.user)
-        return Response(TailorProfileSerializer(profile).data)
+        return cached_response(
+            'tailor-me',
+            request,
+            USER_CACHE_TTL,
+            lambda: TailorProfileSerializer(profile).data,
+            user_scoped=True,
+        )
 
     def patch(self, request):
         profile = self.get_profile(request.user)
         serializer = TailorShopSetupSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         profile = serializer.save()
+        invalidate_api_cache()
         return Response(TailorProfileSerializer(profile).data)
 
 
@@ -207,13 +276,20 @@ class DriverMeView(APIView):
 
     def get(self, request):
         profile = self.get_profile(request.user)
-        return Response(DriverProfileSerializer(profile).data)
+        return cached_response(
+            'driver-me',
+            request,
+            USER_CACHE_TTL,
+            lambda: DriverProfileSerializer(profile).data,
+            user_scoped=True,
+        )
 
     def patch(self, request):
         profile = self.get_profile(request.user)
         serializer = DriverProfileUpdateSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         profile = serializer.save()
+        invalidate_api_cache()
         return Response(DriverProfileSerializer(profile).data)
 
 
@@ -221,6 +297,21 @@ class FabricListView(generics.ListCreateAPIView):
     queryset = Fabric.objects.filter(is_active=True)
     serializer_class = FabricSerializer
     permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        return super().get_queryset().order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'fabric-list',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+        )
+
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
 
 
 class TailorFabricListCreateView(generics.ListCreateAPIView):
@@ -230,8 +321,18 @@ class TailorFabricListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return Fabric.objects.filter(uploaded_by=self.request.user).order_by('-created_at')
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'tailor-fabrics',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
     def perform_create(self, serializer):
         serializer.save()
+        invalidate_api_cache()
 
 
 class TailorFabricDetailView(generics.RetrieveDestroyAPIView):
@@ -241,20 +342,45 @@ class TailorFabricDetailView(generics.RetrieveDestroyAPIView):
     def get_queryset(self):
         return Fabric.objects.filter(uploaded_by=self.request.user)
 
+    def destroy(self, request, *args, **kwargs):
+        response = super().destroy(request, *args, **kwargs)
+        invalidate_api_cache()
+        return response
+
 
 class DesignListView(generics.ListCreateAPIView):
     queryset = Design.objects.filter(is_active=True)
     serializer_class = DesignSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
+    def get_queryset(self):
+        return super().get_queryset().order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'design-list',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+        )
+
     def perform_create(self, serializer):
         serializer.save()
+        invalidate_api_cache()
 
 
 class DesignDetailView(generics.RetrieveAPIView):
     queryset = Design.objects.filter(is_active=True)
     serializer_class = DesignSerializer
     permission_classes = [permissions.AllowAny]
+
+    def retrieve(self, request, *args, **kwargs):
+        return cached_response(
+            'design-detail',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_object()).data,
+        )
 
 
 class TailorDesignListCreateView(generics.ListCreateAPIView):
@@ -264,8 +390,18 @@ class TailorDesignListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return Design.objects.filter(uploaded_by=self.request.user).order_by('-created_at')
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'tailor-designs',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
     def perform_create(self, serializer):
         serializer.save()
+        invalidate_api_cache()
 
 
 class TailorDesignDetailView(generics.RetrieveDestroyAPIView):
@@ -275,6 +411,11 @@ class TailorDesignDetailView(generics.RetrieveDestroyAPIView):
     def get_queryset(self):
         return Design.objects.filter(uploaded_by=self.request.user)
 
+    def destroy(self, request, *args, **kwargs):
+        response = super().destroy(request, *args, **kwargs)
+        invalidate_api_cache()
+        return response
+
 
 class MeasurementListCreateView(generics.ListCreateAPIView):
     serializer_class = MeasurementSerializer
@@ -283,6 +424,19 @@ class MeasurementListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return MeasurementProfile.objects.filter(customer=self.request.user)
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'measurement-list',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
 
 class MeasurementDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = MeasurementSerializer
@@ -290,6 +444,14 @@ class MeasurementDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return MeasurementProfile.objects.filter(customer=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_api_cache()
 
 
 class OrderListCreateView(generics.ListCreateAPIView):
@@ -302,6 +464,19 @@ class OrderListCreateView(generics.ListCreateAPIView):
         if user.role == User.Role.TAILOR:
             return queryset.filter(tailor=user)
         return queryset.filter(customer=user)
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'order-list',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
 
 
 class OrderDetailView(generics.RetrieveAPIView):
@@ -317,6 +492,15 @@ class OrderDetailView(generics.RetrieveAPIView):
             return queryset.filter(tailor=user)
         return queryset.filter(customer=user)
 
+    def retrieve(self, request, *args, **kwargs):
+        return cached_response(
+            'order-detail',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_object()).data,
+            user_scoped=True,
+        )
+
 
 class TailorOrderListView(generics.ListAPIView):
     serializer_class = OrderSerializer
@@ -324,6 +508,15 @@ class TailorOrderListView(generics.ListAPIView):
 
     def get_queryset(self):
         return Order.objects.filter(tailor=self.request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'tailor-order-list',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
 
 
 class TailorOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
@@ -349,6 +542,7 @@ class TailorOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         refreshed_order = self.get_queryset().get(pk=order.pk)
+        invalidate_api_cache()
         return Response(OrderSerializer(refreshed_order).data)
 
 
@@ -358,6 +552,15 @@ class DriverDeliveryListView(generics.ListAPIView):
 
     def get_queryset(self):
         return Delivery.objects.filter(driver=self.request.user).select_related('order', 'order__customer', 'order__tailor', 'driver')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'driver-deliveries',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
 
 
 class DriverDeliveryDetailUpdateView(generics.RetrieveUpdateAPIView):
@@ -401,32 +604,77 @@ class DriverDeliveryDetailUpdateView(generics.RetrieveUpdateAPIView):
 
         if previous_status != delivery.status or len(update_fields) > 1:
             order.save(update_fields=list(dict.fromkeys(update_fields)))
+        invalidate_api_cache()
 
 
 class NotificationListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        orders = Order.objects.filter(customer=request.user).select_related('tailor')[:10]
-        notifications = [
-            {
-                'id': f'order-{order.id}',
-                'title': f'Order #{order.id} update',
-                'message': f'Your order with {order.tailor.full_name} is currently {order.status}.',
-                'created_at': order.updated_at,
-            }
-            for order in orders
-        ]
-        return Response(NotificationSerializer(notifications, many=True).data)
+        return cached_response(
+            'notifications',
+            request,
+            USER_CACHE_TTL,
+            lambda: NotificationSerializer(
+                [
+                    {
+                        'id': f'order-{order.id}',
+                        'title': f'Order #{order.id} update',
+                        'message': f'Your order with {order.tailor.full_name} is currently {order.status}.',
+                        'created_at': order.updated_at,
+                    }
+                    for order in Order.objects.filter(customer=request.user).select_related('tailor')[:10]
+                ],
+                many=True,
+            ).data,
+            user_scoped=True,
+        )
 
 
 class InvoiceListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        orders = Order.objects.filter(customer=request.user).select_related('tailor')[:20]
-        invoices = [
-            {
+        return cached_response(
+            'invoice-list',
+            request,
+            USER_CACHE_TTL,
+            lambda: InvoiceSerializer(
+                [
+                    {
+                        'id': f'INV-{order.id}',
+                        'order_id': order.id,
+                        'customer_name': order.customer.full_name,
+                        'tailor_name': order.tailor.full_name,
+                        'total': order.total,
+                        'payment_method': order.payment_method,
+                        'payment_status': order.payment_status,
+                        'created_at': order.created_at,
+                    }
+                    for order in Order.objects.filter(customer=request.user).select_related('tailor')[:20]
+                ],
+                many=True,
+            ).data,
+            user_scoped=True,
+        )
+
+
+class InvoiceDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, invoice_id):
+        def build_payload():
+            try:
+                order_id = int(str(invoice_id).replace('INV-', ''))
+            except ValueError:
+                raise ValueError('Invoice not found.')
+
+            order = get_object_or_404(
+                Order.objects.select_related('customer', 'tailor'),
+                pk=order_id,
+                customer=request.user,
+            )
+            payload = {
                 'id': f'INV-{order.id}',
                 'order_id': order.id,
                 'customer_name': order.customer.full_name,
@@ -436,44 +684,23 @@ class InvoiceListView(APIView):
                 'payment_status': order.payment_status,
                 'created_at': order.created_at,
             }
-            for order in orders
-        ]
-        return Response(InvoiceSerializer(invoices, many=True).data)
+            return InvoiceSerializer(payload).data
 
-
-class InvoiceDetailView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, invoice_id):
         try:
-            order_id = int(str(invoice_id).replace('INV-', ''))
+            return cached_response('invoice-detail', request, USER_CACHE_TTL, build_payload, user_scoped=True)
         except ValueError:
             return Response({'detail': 'Invoice not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        order = get_object_or_404(
-            Order.objects.select_related('customer', 'tailor'),
-            pk=order_id,
-            customer=request.user,
-        )
-        payload = {
-            'id': f'INV-{order.id}',
-            'order_id': order.id,
-            'customer_name': order.customer.full_name,
-            'tailor_name': order.tailor.full_name,
-            'total': order.total,
-            'payment_method': order.payment_method,
-            'payment_status': order.payment_status,
-            'created_at': order.created_at,
-        }
-        return Response(InvoiceSerializer(payload).data)
 
 
 class AdminOverviewView(APIView):
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
-        return Response(
-            {
+        return cached_response(
+            'admin-overview',
+            request,
+            USER_CACHE_TTL,
+            lambda: {
                 'counts': {
                     'customers': User.objects.filter(role=User.Role.CUSTOMER).count(),
                     'tailors': User.objects.filter(role=User.Role.TAILOR).count(),
@@ -485,7 +712,8 @@ class AdminOverviewView(APIView):
                     'fabrics': Fabric.objects.count(),
                     'designs': Design.objects.count(),
                 }
-            }
+            },
+            user_scoped=True,
         )
 
 
@@ -554,11 +782,35 @@ class AdminFabricViewSet(viewsets.ModelViewSet):
     serializer_class = FabricSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_api_cache()
+
 
 class AdminDesignViewSet(viewsets.ModelViewSet):
     queryset = Design.objects.all()
     serializer_class = DesignSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_api_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_api_cache()
 
 
 class AdminOrderListView(generics.ListAPIView):
@@ -588,6 +840,7 @@ class AdminOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         refreshed_order = self.get_queryset().get(pk=order.pk)
+        invalidate_api_cache()
         return Response(AdminOrderDetailSerializer(refreshed_order).data)
 
 
@@ -620,6 +873,7 @@ class AdminAssignDriverView(APIView):
 
         order.status = Order.Status.OUT_FOR_DELIVERY if order.status == Order.Status.READY else order.status
         order.save(update_fields=['status', 'updated_at'])
+        invalidate_api_cache()
 
         return Response(DeliverySerializer(delivery).data)
 

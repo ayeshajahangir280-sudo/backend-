@@ -81,6 +81,7 @@ DATABASES = {
         ssl_require=True,
     )
 }
+DATABASES['default']['CONN_HEALTH_CHECKS'] = True
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -105,6 +106,14 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'fass-us-api-cache',
+        'TIMEOUT': 120,
+    }
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'core.User'

@@ -38,7 +38,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=255)
     phone = models.CharField(max_length=30, blank=True)
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.CUSTOMER)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.CUSTOMER, db_index=True)
     address = models.TextField(blank=True)
 
     USERNAME_FIELD = 'email'
@@ -76,6 +76,11 @@ class TailorProfile(models.Model):
     def __str__(self):
         return self.user.full_name
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['is_active', 'is_featured']),
+        ]
+
 
 class DriverProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
@@ -92,6 +97,11 @@ class DriverProfile(models.Model):
     def __str__(self):
         return self.user.full_name
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['is_available']),
+        ]
+
 
 class MeasurementProfile(models.Model):
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='measurements')
@@ -107,6 +117,9 @@ class MeasurementProfile(models.Model):
 
     class Meta:
         ordering = ['-is_default', '-created_at']
+        indexes = [
+            models.Index(fields=['customer', 'is_default', '-created_at']),
+        ]
 
     def __str__(self):
         return f'{self.customer.full_name} - {self.name}'
@@ -126,6 +139,10 @@ class Fabric(models.Model):
 
     class Meta:
         ordering = ['material']
+        indexes = [
+            models.Index(fields=['is_active', '-created_at']),
+            models.Index(fields=['uploaded_by', 'is_active', '-created_at']),
+        ]
 
     def __str__(self):
         return f'{self.material} - {self.color}'
@@ -146,6 +163,10 @@ class Design(models.Model):
 
     class Meta:
         ordering = ['title']
+        indexes = [
+            models.Index(fields=['is_active', '-created_at']),
+            models.Index(fields=['uploaded_by', 'is_active', '-created_at']),
+        ]
 
     def __str__(self):
         return self.title
@@ -196,6 +217,12 @@ class Order(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['customer', '-created_at']),
+            models.Index(fields=['tailor', '-created_at']),
+            models.Index(fields=['tailor', 'status', '-created_at']),
+            models.Index(fields=['customer', 'status', '-created_at']),
+        ]
 
     def __str__(self):
         return f'Order #{self.pk}'
@@ -221,6 +248,9 @@ class Delivery(models.Model):
 
     class Meta:
         ordering = ['-id']
+        indexes = [
+            models.Index(fields=['driver', 'status', '-assigned_date']),
+        ]
 
     def __str__(self):
         return f'Delivery #{self.pk}'

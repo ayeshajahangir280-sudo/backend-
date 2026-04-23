@@ -1,7 +1,7 @@
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Design, Fabric, MeasurementProfile, TailorProfile, User
+from .models import Design, Fabric, MeasurementProfile, Order, TailorProfile, User
 
 
 class OrderFlowTests(APITestCase):
@@ -231,3 +231,31 @@ class OrderFlowTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['category'], 'Custom')
+
+    def test_admin_order_list_includes_design_and_fabric_images(self):
+        admin = User.objects.create_superuser(
+            email='admin@example.com',
+            password='password123',
+            full_name='Admin User',
+        )
+        order = Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='40.00',
+            total='40.00',
+        )
+
+        self.client.force_authenticate(user=admin)
+        response = self.client.get('/api/admin/orders/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]['id'], order.id)
+        self.assertEqual(response.data[0]['design_image'], 'https://cdn.example.com/designs/classic-kandura.png')
+        self.assertEqual(response.data[0]['fabric_image'], 'https://cdn.example.com/fabrics/cotton-white.png')
+        self.assertEqual(response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
+        self.assertEqual(response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])

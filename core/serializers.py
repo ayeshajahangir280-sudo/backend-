@@ -735,8 +735,12 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
     tailor_name = serializers.CharField(source='tailor.full_name', read_only=True)
     tailor_phone = serializers.CharField(source='tailor.phone', read_only=True)
     design_name = serializers.CharField(source='design.title', read_only=True)
+    design_image = serializers.CharField(source='design.image', read_only=True)
+    design_images = serializers.ListField(source='design.images', child=serializers.CharField(), read_only=True)
     fabric_name = serializers.CharField(source='fabric.material', read_only=True)
     fabric_color = serializers.CharField(source='fabric.color', read_only=True)
+    fabric_image = serializers.CharField(source='fabric.image', read_only=True)
+    fabric_images = serializers.ListField(source='fabric.images', child=serializers.CharField(), read_only=True)
     assigned_driver_name = serializers.SerializerMethodField()
     assigned_driver_id = serializers.SerializerMethodField()
 
@@ -749,8 +753,12 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
             'tailor_name',
             'tailor_phone',
             'design_name',
+            'design_image',
+            'design_images',
             'fabric_name',
             'fabric_color',
+            'fabric_image',
+            'fabric_images',
             'status',
             'payment_method',
             'payment_status',
@@ -777,6 +785,16 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return None
         return delivery.driver.id if delivery.driver else None
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
+        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
+        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        representation['design_images'] = design_images
+        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_images'] = fabric_images
+        return representation
 
 
 class AdminOrderDetailSerializer(OrderSerializer):
