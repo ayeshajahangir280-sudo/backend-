@@ -1,3 +1,7 @@
+import base64
+import io
+
+from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -6,6 +10,13 @@ from .views import should_cache_payload
 
 
 class OrderFlowTests(APITestCase):
+    @staticmethod
+    def make_inline_image(size=(2400, 1800), color=(120, 80, 40)):
+        output = io.BytesIO()
+        Image.new('RGB', size, color).save(output, format='PNG')
+        encoded = base64.b64encode(output.getvalue()).decode('ascii')
+        return f'data:image/png;base64,{encoded}'
+
     def setUp(self):
         self.customer = User.objects.create_user(
             email='customer@example.com',
@@ -314,3 +325,35 @@ class OrderFlowTests(APITestCase):
         self.assertFalse(should_cache_payload({'image': 'data:image/png;base64,INLINE_BIG_IMAGE'}))
         self.assertFalse(should_cache_payload({'blob': 'x' * 300000}))
         self.assertTrue(should_cache_payload({'detail': 'ok', 'count': 2}))
+
+    def test_backend_silently_optimizes_uploaded_inline_images(self):
+        large_inline_image = self.make_inline_image()
+
+        self.client.force_authenticate(user=self.tailor)
+        design_response = self.client.post(
+            '/api/tailor/designs/',
+            {
+                'title': 'Compressed Design',
+                'description': 'Should be optimized on save',
+                'base_price': '150.00',
+                'image': large_inline_image,
+                'images': [large_inline_image],
+                'compatible_fabrics': [],
+            },
+            format='json',
+        )
+        self.assertEqual(design_response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(str(design_response.data['image']).startswith('data:image/jpeg;base64,'))
+        self.assertLess(len(design_response.data['image']), len(large_inline_image))
+
+        setup_response = self.client.patch(
+            '/api/tailor/me/',
+            {
+                'shop_name': 'Compressed Logo Shop',
+                'image': large_inline_image,
+            },
+            format='json',
+        )
+        self.assertEqual(setup_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(str(setup_response.data['image']).startswith('data:image/jpeg;base64,'))
+        self.assertLess(len(setup_response.data['image']), len(large_inline_image))

@@ -1,8 +1,12 @@
+import base64
+import io
+import re
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
+from PIL import Image, ImageOps
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 
@@ -11,6 +15,48 @@ from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile,
 
 def is_inline_image(value):
     return isinstance(value, str) and value.strip().lower().startswith('data:')
+
+
+INLINE_IMAGE_PATTERN = re.compile(r'^data:(image/[-+.\w]+);base64,(.+)$', re.IGNORECASE | re.DOTALL)
+MAX_INLINE_IMAGE_DIMENSION = 1600
+INLINE_IMAGE_JPEG_QUALITY = 60
+
+
+def optimize_inline_image(value):
+    if not is_inline_image(value):
+        return value
+
+    match = INLINE_IMAGE_PATTERN.match(value.strip())
+    if not match:
+        return value
+
+    try:
+        raw_bytes = base64.b64decode(match.group(2), validate=True)
+        with Image.open(io.BytesIO(raw_bytes)) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ('RGB', 'L'):
+                image = image.convert('RGB')
+            elif image.mode == 'L':
+                image = image.convert('RGB')
+
+            image.thumbnail((MAX_INLINE_IMAGE_DIMENSION, MAX_INLINE_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
+
+            output = io.BytesIO()
+            image.save(
+                output,
+                format='JPEG',
+                quality=INLINE_IMAGE_JPEG_QUALITY,
+                optimize=True,
+            )
+
+        encoded = base64.b64encode(output.getvalue()).decode('ascii')
+        return f'data:image/jpeg;base64,{encoded}'
+    except Exception:
+        return value
+
+
+def optimize_inline_images(values):
+    return [optimize_inline_image(str(value).strip()) for value in (values or []) if str(value).strip()]
 
 
 def get_public_image(primary_image, image_list):
@@ -181,6 +227,9 @@ class TailorShopSetupSerializer(serializers.Serializer):
         user_fields = ('full_name', 'phone', 'address')
         profile_fields = ('shop_name', 'image', 'specialty', 'location', 'eta', 'about', 'bank_name', 'account_title', 'account_number', 'iban')
 
+        if 'image' in validated_data:
+            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
+
         for field in user_fields:
             if field in validated_data:
                 setattr(user, field, validated_data[field])
@@ -280,8 +329,8 @@ class FabricSerializer(serializers.ModelSerializer):
         normalized_data['color'] = color.strip()
         normalized_data['shop'] = shop.strip()
         normalized_data['description'] = description.strip()
-        normalized_data['image'] = image.strip()
-        normalized_data['images'] = [str(item).strip() for item in images if str(item).strip()]
+        normalized_data['image'] = optimize_inline_image(image.strip())
+        normalized_data['images'] = optimize_inline_images(images)
 
         if normalized_data['images'] and not normalized_data['image']:
             normalized_data['image'] = normalized_data['images'][0]
@@ -363,11 +412,12 @@ class DesignSerializer(serializers.ModelSerializer):
         return representation
 
     def create(self, validated_data):
-        images = validated_data.pop('images', [])
+        images = optimize_inline_images(validated_data.pop('images', []))
         request = self.context.get('request')
         user = getattr(request, 'user', None)
 
         validated_data['category'] = (validated_data.get('category') or '').strip() or 'Custom'
+        validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
 
         if images and not validated_data.get('image'):
             validated_data['image'] = images[0]
@@ -384,10 +434,12 @@ class DesignSerializer(serializers.ModelSerializer):
         images = validated_data.pop('images', None)
         if 'category' in validated_data:
             validated_data['category'] = (validated_data.get('category') or '').strip() or instance.category or 'Custom'
+        if 'image' in validated_data:
+            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
         if images is not None:
-            validated_data['images'] = images
+            validated_data['images'] = optimize_inline_images(images)
             if images and not validated_data.get('image'):
-                validated_data['image'] = images[0]
+                validated_data['image'] = validated_data['images'][0]
         return super().update(instance, validated_data)
 
 
