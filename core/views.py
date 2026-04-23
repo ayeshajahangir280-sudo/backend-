@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 from django.core.cache import cache
 from django.db import transaction
@@ -43,6 +44,7 @@ from .serializers import (
 CACHE_VERSION_KEY = 'api-cache-version'
 PUBLIC_CACHE_TTL = 120
 USER_CACHE_TTL = 60
+MAX_CACHEABLE_PAYLOAD_BYTES = 262144
 
 
 TAILOR_STATUS_FLOW = {
@@ -89,8 +91,31 @@ def cached_response(namespace, request, ttl, builder, *, user_scoped=False):
         return Response(cached_payload)
 
     payload = builder()
-    cache.set(cache_key, payload, ttl)
+    if should_cache_payload(payload):
+        cache.set(cache_key, payload, ttl)
     return Response(payload)
+
+
+def payload_contains_inline_image(value):
+    if isinstance(value, str):
+        return value.strip().lower().startswith('data:image/')
+    if isinstance(value, dict):
+        return any(payload_contains_inline_image(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(payload_contains_inline_image(item) for item in value)
+    return False
+
+
+def should_cache_payload(payload):
+    if payload_contains_inline_image(payload):
+        return False
+
+    try:
+        serialized = json.dumps(payload, separators=(',', ':'))
+    except (TypeError, ValueError):
+        return False
+
+    return len(serialized.encode('utf-8')) <= MAX_CACHEABLE_PAYLOAD_BYTES
 
 
 def invalidate_api_cache():

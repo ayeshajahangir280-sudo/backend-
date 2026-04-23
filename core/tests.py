@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .models import Design, Fabric, MeasurementProfile, Order, TailorProfile, User
+from .views import should_cache_payload
 
 
 class OrderFlowTests(APITestCase):
@@ -308,3 +309,8 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         inline_tailor = next(item for item in response.data if item['id'] == tailor_with_inline_logo.id)
         self.assertEqual(inline_tailor['image'], 'data:image/png;base64,INLINE_TAILOR_LOGO')
+
+    def test_cache_skips_inline_or_oversized_payloads(self):
+        self.assertFalse(should_cache_payload({'image': 'data:image/png;base64,INLINE_BIG_IMAGE'}))
+        self.assertFalse(should_cache_payload({'blob': 'x' * 300000}))
+        self.assertTrue(should_cache_payload({'detail': 'ok', 'count': 2}))
