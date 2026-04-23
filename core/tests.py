@@ -138,7 +138,7 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('measurement_id', response.data)
 
-    def test_tailor_endpoints_strip_inline_base64_images(self):
+    def test_tailor_endpoints_return_uploaded_images_even_when_they_are_inline(self):
         self.client.force_authenticate(user=self.customer)
         order_response = self.client.post(
             '/api/orders/',
@@ -167,3 +167,67 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(orders_response.data[0]['fabric_image'], 'https://cdn.example.com/fabrics/cotton-white.png')
         self.assertEqual(orders_response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
         self.assertEqual(orders_response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
+
+        inline_design = Design.objects.create(
+            title='Inline Only Design',
+            category='Custom',
+            description='Uploaded from app',
+            base_price='15.00',
+            uploaded_by=self.tailor,
+            image='data:image/png;base64,INLINE_ONLY_DESIGN',
+            images=['data:image/png;base64,INLINE_ONLY_DESIGN'],
+        )
+        inline_fabric = Fabric.objects.create(
+            material='Inline Cotton',
+            color='Cream',
+            price='7.00',
+            uploaded_by=self.tailor,
+            image='data:image/png;base64,INLINE_ONLY_FABRIC',
+            images=['data:image/png;base64,INLINE_ONLY_FABRIC'],
+        )
+
+        self.client.force_authenticate(user=self.customer)
+        inline_order_response = self.client.post(
+            '/api/orders/',
+            {
+                'tailor': self.tailor.id,
+                'design': inline_design.id,
+                'fabric': inline_fabric.id,
+                'measurement_id': self.measurement.id,
+                'payment_method': 'card',
+                'delivery_address': 'Customer Address',
+            },
+            format='json',
+        )
+        self.assertEqual(inline_order_response.status_code, status.HTTP_201_CREATED)
+
+        self.client.force_authenticate(user=self.tailor)
+        updated_designs_response = self.client.get('/api/tailor/designs/')
+        self.assertEqual(updated_designs_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(updated_designs_response.data[0]['image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
+        self.assertEqual(updated_designs_response.data[0]['images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
+
+        updated_orders_response = self.client.get('/api/tailor/orders/')
+        self.assertEqual(updated_orders_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(updated_orders_response.data[0]['design_image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
+        self.assertEqual(updated_orders_response.data[0]['fabric_image'], 'data:image/png;base64,INLINE_ONLY_FABRIC')
+        self.assertEqual(updated_orders_response.data[0]['design_images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
+        self.assertEqual(updated_orders_response.data[0]['fabric_images'], ['data:image/png;base64,INLINE_ONLY_FABRIC'])
+
+    def test_tailor_can_create_design_without_category_field(self):
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.post(
+            '/api/tailor/designs/',
+            {
+                'title': 'No Category Design',
+                'description': 'Uploaded without category',
+                'base_price': '200.00',
+                'image': 'data:image/jpeg;base64,AAAABBBB',
+                'images': ['data:image/jpeg;base64,AAAABBBB'],
+                'compatible_fabrics': [],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['category'], 'Custom')

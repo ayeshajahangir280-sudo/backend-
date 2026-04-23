@@ -20,6 +20,13 @@ def get_public_image(primary_image, image_list):
     for image in image_list or []:
         if image and not is_inline_image(image):
             return image
+
+    if primary_image:
+        return primary_image
+
+    for image in image_list or []:
+        if image:
+            return image
     return ''
 
 
@@ -29,7 +36,14 @@ def get_public_images(primary_image, image_list):
 
     if fallback_image and fallback_image not in public_images:
         return [fallback_image, *public_images]
-    return public_images
+    if public_images:
+        return public_images
+
+    fallback_images = []
+    for image in [primary_image, *(image_list or [])]:
+        if image and image not in fallback_images:
+            fallback_images.append(image)
+    return fallback_images
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -320,6 +334,7 @@ class FabricSerializer(serializers.ModelSerializer):
 
 
 class DesignSerializer(serializers.ModelSerializer):
+    category = serializers.CharField(required=False, allow_blank=True)
     images = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
 
     class Meta:
@@ -352,6 +367,8 @@ class DesignSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         user = getattr(request, 'user', None)
 
+        validated_data['category'] = (validated_data.get('category') or '').strip() or 'Custom'
+
         if images and not validated_data.get('image'):
             validated_data['image'] = images[0]
 
@@ -365,6 +382,8 @@ class DesignSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         images = validated_data.pop('images', None)
+        if 'category' in validated_data:
+            validated_data['category'] = (validated_data.get('category') or '').strip() or instance.category or 'Custom'
         if images is not None:
             validated_data['images'] = images
             if images and not validated_data.get('image'):
