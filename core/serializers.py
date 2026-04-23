@@ -157,7 +157,7 @@ class TailorProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        representation['image'] = '' if is_inline_image(representation.get('image')) else representation.get('image', '')
+        representation['image'] = get_public_image(representation.get('image', ''), [])
         return representation
 
 
@@ -598,7 +598,8 @@ class OrderSerializer(serializers.ModelSerializer):
         if design:
             subtotal += design.base_price
         if fabric:
-            subtotal += fabric.price
+            # Customer checkout prices fabrics per meter and uses a default 3m estimate.
+            subtotal += fabric.price * Decimal('3')
         delivery_fee = validated_data.get('delivery_fee', Decimal('0.00'))
         validated_data.setdefault('subtotal', subtotal)
         validated_data.setdefault('total', subtotal + delivery_fee)
@@ -630,10 +631,12 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.full_name', read_only=True)
     customer_phone = serializers.CharField(read_only=True)
     design_name = serializers.CharField(source='design.title', read_only=True)
-    design_image = serializers.SerializerMethodField()
+    design_image = serializers.CharField(source='design.image', read_only=True)
+    design_images = serializers.ListField(source='design.images', child=serializers.CharField(), read_only=True)
     fabric_name = serializers.CharField(source='fabric.material', read_only=True)
     fabric_color = serializers.CharField(source='fabric.color', read_only=True)
-    fabric_image = serializers.SerializerMethodField()
+    fabric_image = serializers.CharField(source='fabric.image', read_only=True)
+    fabric_images = serializers.ListField(source='fabric.images', child=serializers.CharField(), read_only=True)
     measurement = serializers.SerializerMethodField()
 
     class Meta:
@@ -644,9 +647,11 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
             'customer_phone',
             'design_name',
             'design_image',
+            'design_images',
             'fabric_name',
             'fabric_color',
             'fabric_image',
+            'fabric_images',
             'measurement',
             'garment_type',
             'notes',
@@ -656,31 +661,6 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
 
-    @staticmethod
-    def _is_inline_image(value):
-        return is_inline_image(value)
-
-    def _pick_public_image(self, primary_image, image_list):
-        if primary_image and not self._is_inline_image(primary_image):
-            return primary_image
-
-        for image in image_list or []:
-            if image and not self._is_inline_image(image):
-                return image
-        return ''
-
-    def get_design_image(self, obj):
-        design = obj.design
-        if not design:
-            return ''
-        return self._pick_public_image(design.image, getattr(design, 'images', []))
-
-    def get_fabric_image(self, obj):
-        fabric = obj.fabric
-        if not fabric:
-            return ''
-        return self._pick_public_image(fabric.image, getattr(fabric, 'images', []))
-
     def get_measurement(self, obj):
         measurement = obj.measurement
         if measurement is None:
@@ -689,6 +669,16 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
                 or MeasurementProfile.objects.filter(customer=obj.customer).order_by('-created_at').first()
             )
         return MeasurementSerializer(measurement).data if measurement else None
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
+        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
+        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        representation['design_images'] = design_images
+        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_images'] = fabric_images
+        return representation
 
 
 class DashboardSerializer(serializers.Serializer):

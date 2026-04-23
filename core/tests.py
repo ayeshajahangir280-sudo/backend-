@@ -92,6 +92,8 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['tailor'], self.tailor.id)
         self.assertEqual(response.data['measurement']['id'], self.measurement.id)
+        self.assertEqual(response.data['subtotal'], '50.00')
+        self.assertEqual(response.data['total'], '50.00')
 
         customer_orders = self.client.get('/api/orders/')
         self.assertEqual(customer_orders.status_code, status.HTTP_200_OK)
@@ -259,3 +261,50 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data[0]['fabric_image'], 'https://cdn.example.com/fabrics/cotton-white.png')
         self.assertEqual(response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
         self.assertEqual(response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
+
+    def test_tailor_order_detail_includes_design_and_fabric_images(self):
+        order = Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='40.00',
+            total='40.00',
+        )
+
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.get(f'/api/tailor/orders/{order.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['design_image'], 'https://cdn.example.com/designs/classic-kandura.png')
+        self.assertEqual(response.data['fabric_image'], 'https://cdn.example.com/fabrics/cotton-white.png')
+        self.assertEqual(response.data['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
+        self.assertEqual(response.data['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
+
+    def test_customer_dashboard_tailor_list_keeps_inline_tailor_logo(self):
+        tailor_with_inline_logo = User.objects.create_user(
+            email='inline-tailor@example.com',
+            password='password123',
+            full_name='Inline Tailor',
+            role=User.Role.TAILOR,
+            phone='03000000003',
+            address='Inline Address',
+        )
+        TailorProfile.objects.create(
+            user=tailor_with_inline_logo,
+            shop_name='Inline Logo Shop',
+            image='data:image/png;base64,INLINE_TAILOR_LOGO',
+            specialty='kandura',
+            location='Sharjah',
+            is_active=True,
+        )
+
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get('/api/tailors/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        inline_tailor = next(item for item in response.data if item['id'] == tailor_with_inline_logo.id)
+        self.assertEqual(inline_tailor['image'], 'data:image/png;base64,INLINE_TAILOR_LOGO')
