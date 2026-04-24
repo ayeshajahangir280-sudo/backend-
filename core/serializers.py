@@ -871,6 +871,41 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         return get_public_image(getattr(fabric, 'image', ''), self.get_fabric_images(obj))
 
 
+class PublicTailorSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='user.id', read_only=True)
+    name = serializers.CharField(source='user.full_name', read_only=True)
+    rating = serializers.DecimalField(max_digits=3, decimal_places=1, read_only=True)
+    specialty = serializers.CharField(read_only=True)
+    location = serializers.CharField(read_only=True)
+    eta = serializers.CharField(read_only=True)
+    image = serializers.SerializerMethodField()
+    about = serializers.CharField(read_only=True)
+    service_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    is_featured = serializers.BooleanField(read_only=True)
+    is_active = serializers.BooleanField(read_only=True)
+    shop_name = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = TailorProfile
+        fields = [
+            'id',
+            'name',
+            'rating',
+            'specialty',
+            'location',
+            'eta',
+            'image',
+            'about',
+            'service_price',
+            'is_featured',
+            'is_active',
+            'shop_name',
+        ]
+
+    def get_image(self, obj):
+        return get_public_image(obj.image, [])
+
+
 class DashboardTailorSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(source='user.id', read_only=True)
     name = serializers.CharField(source='user.full_name', read_only=True)
@@ -960,9 +995,9 @@ class DashboardSerializer(serializers.Serializer):
 
 
 class TailorShopCatalogSerializer(serializers.Serializer):
-    tailor = TailorProfileSerializer()
-    fabrics = FabricSerializer(many=True)
-    designs = DesignSerializer(many=True)
+    tailor = PublicTailorSerializer()
+    fabrics = DashboardFabricSerializer(many=True)
+    designs = DashboardDesignSerializer(many=True)
 
 
 class AdminTailorDetailSerializer(TailorProfileSerializer):
@@ -987,6 +1022,16 @@ class AdminDriverDetailSerializer(DriverProfileSerializer):
     def get_recent_deliveries(self, obj):
         deliveries = list(obj.user.deliveries.all()[:5])
         return AdminDriverDeliverySummarySerializer(deliveries, many=True).data
+
+
+class AdminDriverAssignmentSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='user.id', read_only=True)
+    name = serializers.CharField(source='user.full_name', read_only=True)
+    phone = serializers.CharField(source='user.phone', read_only=True)
+
+    class Meta:
+        model = DriverProfile
+        fields = ['id', 'name', 'phone', 'vehicle_type', 'is_available']
 
 
 class AdminOrderListSerializer(serializers.ModelSerializer):

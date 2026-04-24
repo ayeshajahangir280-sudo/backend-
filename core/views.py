@@ -17,7 +17,10 @@ from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile,
 from .permissions import IsCustomer, IsDriver, IsTailor
 from .serializers import (
     AdminAssignDriverSerializer,
+    AdminDriverAssignmentSerializer,
     AdminDriverDetailSerializer,
+    DashboardDesignSerializer,
+    DashboardFabricSerializer,
     AdminOrderListSerializer,
     AdminOrderDetailSerializer,
     AdminTailorDetailSerializer,
@@ -32,6 +35,7 @@ from .serializers import (
     MeasurementSerializer,
     NotificationSerializer,
     OrderSerializer,
+    PublicTailorSerializer,
     SignupSerializer,
     TailorShopCatalogSerializer,
     TailorShopSetupSerializer,
@@ -261,12 +265,28 @@ class CustomerDashboardView(APIView):
 
 
 class TailorListView(generics.ListAPIView):
-    queryset = TailorProfile.objects.filter(is_active=True).select_related('user')
-    serializer_class = TailorProfileSerializer
+    serializer_class = PublicTailorSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = (
+            TailorProfile.objects.filter(is_active=True)
+            .select_related('user')
+            .only(
+                'user__id',
+                'user__full_name',
+                'rating',
+                'specialty',
+                'location',
+                'eta',
+                'image',
+                'about',
+                'service_price',
+                'is_featured',
+                'is_active',
+                'shop_name',
+            )
+        )
         if self.request.query_params.get('top') == '1':
             queryset = queryset.filter(is_featured=True)
         return queryset
@@ -281,8 +301,25 @@ class TailorListView(generics.ListAPIView):
 
 
 class TailorDetailView(generics.RetrieveAPIView):
-    queryset = TailorProfile.objects.filter(is_active=True).select_related('user')
-    serializer_class = TailorProfileSerializer
+    queryset = (
+        TailorProfile.objects.filter(is_active=True)
+        .select_related('user')
+        .only(
+            'user__id',
+            'user__full_name',
+            'rating',
+            'specialty',
+            'location',
+            'eta',
+            'image',
+            'about',
+            'service_price',
+            'is_featured',
+            'is_active',
+            'shop_name',
+        )
+    )
+    serializer_class = PublicTailorSerializer
     permission_classes = [permissions.AllowAny]
     lookup_field = 'user_id'
     lookup_url_kwarg = 'pk'
@@ -302,13 +339,44 @@ class TailorShopCatalogView(APIView):
     def get(self, request, pk):
         def build_payload():
             tailor = get_object_or_404(
-                TailorProfile.objects.filter(is_active=True).select_related('user'),
+                TailorProfile.objects.filter(is_active=True)
+                .select_related('user')
+                .only(
+                    'user__id',
+                    'user__full_name',
+                    'rating',
+                    'specialty',
+                    'location',
+                    'eta',
+                    'image',
+                    'about',
+                    'service_price',
+                    'is_featured',
+                    'is_active',
+                    'shop_name',
+                ),
                 user_id=pk,
             )
             payload = {
                 'tailor': tailor,
-                'fabrics': Fabric.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
-                'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True).order_by('-created_at'),
+                'fabrics': Fabric.objects.filter(uploaded_by_id=pk, is_active=True)
+                .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
+                .order_by('-created_at'),
+                'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True)
+                .only(
+                    'id',
+                    'title',
+                    'category',
+                    'image',
+                    'images',
+                    'description',
+                    'compatible_fabrics',
+                    'designer',
+                    'base_price',
+                    'is_active',
+                    'created_at',
+                )
+                .order_by('-created_at'),
             }
             return TailorShopCatalogSerializer(payload).data
 
@@ -369,11 +437,16 @@ class DriverMeView(APIView):
 
 class FabricListView(generics.ListCreateAPIView):
     queryset = Fabric.objects.filter(is_active=True)
-    serializer_class = FabricSerializer
+    serializer_class = DashboardFabricSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
-        return super().get_queryset().order_by('-created_at')
+        return (
+            super()
+            .get_queryset()
+            .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
+            .order_by('-created_at')
+        )
 
     def list(self, request, *args, **kwargs):
         return cached_response(
@@ -386,6 +459,23 @@ class FabricListView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save()
         invalidate_api_cache()
+
+
+class FabricDetailView(generics.RetrieveAPIView):
+    queryset = (
+        Fabric.objects.filter(is_active=True)
+        .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
+    )
+    serializer_class = DashboardFabricSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def retrieve(self, request, *args, **kwargs):
+        return cached_response(
+            'fabric-detail',
+            request,
+            PUBLIC_CACHE_TTL,
+            lambda: self.get_serializer(self.get_object()).data,
+        )
 
 
 class TailorFabricListCreateView(generics.ListCreateAPIView):
@@ -424,11 +514,28 @@ class TailorFabricDetailView(generics.RetrieveDestroyAPIView):
 
 class DesignListView(generics.ListCreateAPIView):
     queryset = Design.objects.filter(is_active=True)
-    serializer_class = DesignSerializer
+    serializer_class = DashboardDesignSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
-        return super().get_queryset().order_by('-created_at')
+        return (
+            super()
+            .get_queryset()
+            .only(
+                'id',
+                'title',
+                'category',
+                'image',
+                'images',
+                'description',
+                'compatible_fabrics',
+                'designer',
+                'base_price',
+                'is_active',
+                'created_at',
+            )
+            .order_by('-created_at')
+        )
 
     def list(self, request, *args, **kwargs):
         return cached_response(
@@ -444,8 +551,23 @@ class DesignListView(generics.ListCreateAPIView):
 
 
 class DesignDetailView(generics.RetrieveAPIView):
-    queryset = Design.objects.filter(is_active=True)
-    serializer_class = DesignSerializer
+    queryset = (
+        Design.objects.filter(is_active=True)
+        .only(
+            'id',
+            'title',
+            'category',
+            'image',
+            'images',
+            'description',
+            'compatible_fabrics',
+            'designer',
+            'base_price',
+            'is_active',
+            'created_at',
+        )
+    )
+    serializer_class = DashboardDesignSerializer
     permission_classes = [permissions.AllowAny]
 
     def retrieve(self, request, *args, **kwargs):
@@ -846,35 +968,139 @@ class AdminResetTestDataView(APIView):
 
 
 class AdminTailorViewSet(viewsets.ModelViewSet):
-    queryset = TailorProfile.objects.select_related('user').annotate(active_orders=Count('user__tailor_orders')).prefetch_related(
-        Prefetch(
-            'user__tailor_orders',
-            queryset=Order.objects.select_related('customer').order_by('-created_at'),
-        )
-    )
     serializer_class = AdminTailorDetailSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
     lookup_field = 'user_id'
     lookup_url_kwarg = 'pk'
 
+    def get_queryset(self):
+        return (
+            TailorProfile.objects.select_related('user')
+            .annotate(active_orders=Count('user__tailor_orders'))
+            .prefetch_related(
+                Prefetch(
+                    'user__tailor_orders',
+                    queryset=Order.objects.select_related('customer')
+                    .only(
+                        'id',
+                        'status',
+                        'payment_method',
+                        'payment_status',
+                        'total',
+                        'created_at',
+                        'customer__full_name',
+                        'customer_phone',
+                    )
+                    .order_by('-created_at'),
+                )
+            )
+            .only(
+                'user__id',
+                'user__full_name',
+                'user__email',
+                'user__phone',
+                'user__address',
+                'rating',
+                'specialty',
+                'location',
+                'eta',
+                'image',
+                'about',
+                'service_price',
+                'is_featured',
+                'is_active',
+                'national_id',
+                'shop_name',
+                'bank_name',
+                'account_title',
+                'account_number',
+                'iban',
+            )
+        )
+
 
 class AdminDriverViewSet(viewsets.ModelViewSet):
-    queryset = DriverProfile.objects.select_related('user').annotate(active_deliveries=Count('user__deliveries')).prefetch_related(
-        Prefetch(
-            'user__deliveries',
-            queryset=Delivery.objects.select_related('order', 'order__customer', 'order__tailor').order_by('-assigned_date', '-id'),
-        )
-    )
     serializer_class = AdminDriverDetailSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
     lookup_field = 'user_id'
     lookup_url_kwarg = 'pk'
 
+    def get_serializer_class(self):
+        if self.request.query_params.get('summary') == '1':
+            return AdminDriverAssignmentSerializer
+        return AdminDriverDetailSerializer
+
+    def get_queryset(self):
+        if self.request.query_params.get('summary') == '1':
+            return (
+                DriverProfile.objects.select_related('user')
+                .only(
+                    'user__id',
+                    'user__full_name',
+                    'user__phone',
+                    'vehicle_type',
+                    'is_available',
+                )
+                .order_by('user__full_name')
+            )
+
+        return (
+            DriverProfile.objects.select_related('user')
+            .annotate(active_deliveries=Count('user__deliveries'))
+            .prefetch_related(
+                Prefetch(
+                    'user__deliveries',
+                    queryset=Delivery.objects.select_related('order', 'order__customer', 'order__tailor')
+                    .only(
+                        'id',
+                        'order__id',
+                        'order__customer__full_name',
+                        'order__customer_phone',
+                        'order__tailor__full_name',
+                        'order__tailor__phone',
+                        'delivery_address',
+                        'status',
+                        'assigned_date',
+                    )
+                    .order_by('-assigned_date', '-id'),
+                )
+            )
+            .only(
+                'user__id',
+                'user__full_name',
+                'user__email',
+                'user__phone',
+                'user__address',
+                'vehicle_type',
+                'vehicle_number',
+                'license_number',
+                'is_available',
+                'national_id',
+                'bank_name',
+                'account_title',
+                'account_number',
+                'iban',
+            )
+        )
+
 
 class AdminFabricViewSet(viewsets.ModelViewSet):
-    queryset = Fabric.objects.all()
     serializer_class = FabricSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def get_queryset(self):
+        return Fabric.objects.only(
+            'id',
+            'material',
+            'color',
+            'price',
+            'image',
+            'images',
+            'shop',
+            'description',
+            'uploaded_by_id',
+            'is_active',
+        ).order_by('-created_at')
 
     def perform_create(self, serializer):
         serializer.save()
@@ -890,9 +1116,24 @@ class AdminFabricViewSet(viewsets.ModelViewSet):
 
 
 class AdminDesignViewSet(viewsets.ModelViewSet):
-    queryset = Design.objects.all()
     serializer_class = DesignSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def get_queryset(self):
+        return Design.objects.only(
+            'id',
+            'title',
+            'category',
+            'image',
+            'images',
+            'description',
+            'compatible_fabrics',
+            'designer',
+            'uploaded_by_id',
+            'base_price',
+            'is_active',
+            'created_at',
+        ).order_by('-created_at')
 
     def perform_create(self, serializer):
         serializer.save()
@@ -908,9 +1149,39 @@ class AdminDesignViewSet(viewsets.ModelViewSet):
 
 
 class AdminOrderListView(generics.ListAPIView):
-    queryset = Order.objects.select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver').all()
     serializer_class = AdminOrderListSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def get_queryset(self):
+        return (
+            Order.objects.select_related('customer', 'tailor', 'design', 'fabric', 'delivery', 'delivery__driver')
+            .only(
+                'id',
+                'customer__full_name',
+                'customer_phone',
+                'tailor__full_name',
+                'tailor__phone',
+                'design__title',
+                'design__image',
+                'design__images',
+                'fabric__material',
+                'fabric__color',
+                'fabric__image',
+                'fabric__images',
+                'status',
+                'payment_method',
+                'payment_status',
+                'subtotal',
+                'delivery_fee',
+                'total',
+                'delivery_address',
+                'notes',
+                'created_at',
+                'delivery__driver__full_name',
+                'delivery__driver_id',
+            )
+            .order_by('-created_at')
+        )
 
 
 class AdminOrderDetailUpdateView(generics.RetrieveUpdateAPIView):

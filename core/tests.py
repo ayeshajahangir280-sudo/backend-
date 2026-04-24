@@ -275,6 +275,42 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
         self.assertEqual(response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
 
+    def test_admin_driver_summary_returns_compact_assignment_payload(self):
+        admin = User.objects.create_superuser(
+            email='admin-summary@example.com',
+            password='password123',
+            full_name='Admin Summary',
+        )
+        driver = User.objects.create_user(
+            email='driver@example.com',
+            password='password123',
+            full_name='Driver User',
+            role=User.Role.DRIVER,
+            phone='03000000009',
+            address='Driver Address',
+        )
+        from .models import DriverProfile
+
+        DriverProfile.objects.create(
+            user=driver,
+            vehicle_type='Bike',
+            vehicle_number='ABC-123',
+            license_number='LIC-1',
+            is_available=True,
+        )
+
+        self.client.force_authenticate(user=admin)
+        response = self.client.get('/api/admin/drivers/?summary=1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]['id'], driver.id)
+        self.assertEqual(response.data[0]['name'], 'Driver User')
+        self.assertEqual(response.data[0]['phone'], '03000000009')
+        self.assertEqual(response.data[0]['vehicle_type'], 'Bike')
+        self.assertTrue(response.data[0]['is_available'])
+        self.assertNotIn('recent_deliveries', response.data[0])
+        self.assertNotIn('email', response.data[0])
+
     def test_tailor_order_detail_includes_design_and_fabric_images(self):
         order = Order.objects.create(
             customer=self.customer,
@@ -345,6 +381,30 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         inline_tailor = next(item for item in response.data if item['id'] == tailor_with_inline_logo.id)
         self.assertEqual(inline_tailor['image'], 'data:image/png;base64,INLINE_TAILOR_LOGO')
+
+    def test_public_tailor_list_excludes_private_profile_fields(self):
+        TailorProfile.objects.filter(user=self.tailor).update(
+            bank_name='Secret Bank',
+            account_number='123456789',
+            iban='PK00TEST000000000000',
+            national_id='35202-0000000-0',
+        )
+
+        response = self.client.get('/api/tailors/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]['id'], self.tailor.id)
+        self.assertNotIn('bank_name', response.data[0])
+        self.assertNotIn('account_number', response.data[0])
+        self.assertNotIn('iban', response.data[0])
+        self.assertNotIn('national_id', response.data[0])
+
+    def test_public_fabric_detail_returns_public_image_list(self):
+        response = self.client.get(f'/api/fabrics/{self.fabric.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['image'], 'https://cdn.example.com/fabrics/cotton-white.png')
+        self.assertEqual(response.data['images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
 
     def test_customer_dashboard_omits_inline_catalog_images_and_heavy_order_fields(self):
         inline_design = Design.objects.create(
