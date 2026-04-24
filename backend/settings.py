@@ -6,6 +6,21 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_csv(name: str, default=None):
+    raw_value = os.getenv(name, '')
+    values = [item.strip() for item in raw_value.split(',') if item.strip()]
+    if values:
+        return values
+    return list(default or [])
+
+
 def load_env_file(env_path: Path) -> None:
     if not env_path.exists():
         return
@@ -21,10 +36,15 @@ def load_env_file(env_path: Path) -> None:
 load_env_file(BASE_DIR / '.env')
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-lj$&=)6@*3s+u%m8!&1@=bfm5g--ig4+2=u!g%v^p@l(t46ms7')
-DEBUG = os.getenv('DEBUG', '').strip().lower() in {'1', 'true', 'yes', 'on'}
-ALLOWED_HOSTS = ['*']
+DEBUG = env_flag('DEBUG', False)
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME', '').strip()
+ALLOWED_HOSTS = env_csv('ALLOWED_HOSTS', default=['127.0.0.1', 'localhost'])
+if RENDER_EXTERNAL_HOSTNAME and RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 MAX_API_REQUEST_BODY_SIZE = int(os.getenv('MAX_API_REQUEST_BODY_SIZE', 8 * 1024 * 1024))
 MAX_API_FORM_FIELDS = int(os.getenv('MAX_API_FORM_FIELDS', 200))
+DATABASE_CONN_MAX_AGE = int(os.getenv('DATABASE_CONN_MAX_AGE', '600'))
+DATABASE_SSL_REQUIRE = env_flag('DATABASE_SSL_REQUIRE', True)
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -80,8 +100,8 @@ if not DATABASE_URL:
 DATABASES = {
     'default': dj_database_url.parse(
         DATABASE_URL,
-        conn_max_age=600,
-        ssl_require=True,
+        conn_max_age=DATABASE_CONN_MAX_AGE,
+        ssl_require=DATABASE_SSL_REQUIRE,
     )
 }
 DATABASES['default']['CONN_HEALTH_CHECKS'] = True
@@ -106,6 +126,8 @@ TIME_ZONE = 'Asia/Karachi'
 
 USE_I18N = True
 USE_TZ = True
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
@@ -128,6 +150,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOW_HEADERS = ['*']
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
+CSRF_TRUSTED_ORIGINS = env_csv('CSRF_TRUSTED_ORIGINS')
 
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', '').strip()
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '').strip()
