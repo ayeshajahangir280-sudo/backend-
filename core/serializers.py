@@ -11,6 +11,7 @@ from PIL import Image, ImageOps
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 
+from .media_storage import MediaStorageError, sync_image_references_to_cloudinary
 from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User
 
 
@@ -164,6 +165,13 @@ def get_dashboard_image(primary_image, image_list):
     return ''
 
 
+def sync_cloudinary_images_or_raise(primary_image, image_list=None, *, folder, field_name='image'):
+    try:
+        return sync_image_references_to_cloudinary(primary_image, image_list or [], folder=folder)
+    except MediaStorageError as exc:
+        raise serializers.ValidationError({field_name: str(exc)}) from exc
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -300,7 +308,13 @@ class TailorShopSetupSerializer(serializers.Serializer):
         profile_fields = ('shop_name', 'image', 'specialty', 'location', 'eta', 'about', 'bank_name', 'account_title', 'account_number', 'iban')
 
         if 'image' in validated_data:
-            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
+            optimized_image = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
+            validated_data['image'], _ = sync_cloudinary_images_or_raise(
+                optimized_image,
+                [],
+                folder='tailor-profiles',
+                field_name='image',
+            )
 
         for field in user_fields:
             if field in validated_data:
@@ -410,6 +424,13 @@ class FabricSerializer(serializers.ModelSerializer):
         if normalized_data['images'] and not normalized_data['image']:
             normalized_data['image'] = normalized_data['images'][0]
 
+        normalized_data['image'], normalized_data['images'] = sync_cloudinary_images_or_raise(
+            normalized_data['image'],
+            normalized_data['images'],
+            folder='fabrics',
+            field_name='images',
+        )
+
         if user and getattr(user, 'is_authenticated', False):
             normalized_data['uploaded_by'] = user
             if getattr(user, 'role', None) == User.Role.TAILOR and not normalized_data.get('shop'):
@@ -500,6 +521,13 @@ class DesignSerializer(serializers.ModelSerializer):
         if images and not validated_data.get('image'):
             validated_data['image'] = images[0]
 
+        validated_data['image'], images = sync_cloudinary_images_or_raise(
+            validated_data['image'],
+            images,
+            folder='designs',
+            field_name='images',
+        )
+
         if user and getattr(user, 'is_authenticated', False):
             validated_data['uploaded_by'] = user
             if getattr(user, 'role', None) == User.Role.TAILOR and not validated_data.get('designer'):
@@ -520,6 +548,16 @@ class DesignSerializer(serializers.ModelSerializer):
                 validated_data['images'] = [validated_data['image'], *validated_data['images']]
             if images and not validated_data.get('image'):
                 validated_data['image'] = validated_data['images'][0]
+        if 'image' in validated_data or images is not None:
+            synced_image, synced_images = sync_cloudinary_images_or_raise(
+                validated_data.get('image', instance.image),
+                validated_data.get('images', instance.images),
+                folder='designs',
+                field_name='images' if images is not None else 'image',
+            )
+            validated_data['image'] = synced_image
+            if images is not None or 'image' in validated_data:
+                validated_data['images'] = synced_images
         return super().update(instance, validated_data)
 
 

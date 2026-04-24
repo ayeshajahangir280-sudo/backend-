@@ -89,6 +89,13 @@ def build_api_cache_key(namespace, *parts):
 
 
 def cached_response(namespace, request, ttl, builder, *, user_scoped=False):
+    bypass_cache = str(request.headers.get('X-Bypass-Cache', '')).strip().lower() in {'1', 'true', 'yes'}
+    if not bypass_cache:
+        bypass_cache = str(request.query_params.get('fresh', '')).strip().lower() in {'1', 'true', 'yes'}
+
+    if bypass_cache:
+        return Response(builder())
+
     user_part = request.user.id if user_scoped and getattr(request.user, 'is_authenticated', False) else 'anon'
     cache_key = build_api_cache_key(namespace, request.get_full_path(), user_part)
     cached_payload = cache.get(cache_key)

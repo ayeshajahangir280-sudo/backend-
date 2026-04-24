@@ -357,6 +357,45 @@ class OrderFlowTests(APITestCase):
         self.assertNotIn('measurement', response.data[0])
         self.assertNotIn('delivery', response.data[0])
 
+    def test_tailor_order_list_can_bypass_cached_payloads_for_live_refresh(self):
+        Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='40.00',
+            total='40.00',
+        )
+
+        self.client.force_authenticate(user=self.tailor)
+        initial_response = self.client.get('/api/tailor/orders/')
+
+        self.assertEqual(initial_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(initial_response.data), 1)
+
+        Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='40.00',
+            total='40.00',
+        )
+
+        cached_response = self.client.get('/api/tailor/orders/')
+        fresh_response = self.client.get('/api/tailor/orders/', HTTP_X_BYPASS_CACHE='1')
+
+        self.assertEqual(cached_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(cached_response.data), 1)
+        self.assertEqual(fresh_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(fresh_response.data), 2)
+
     def test_customer_dashboard_tailor_list_keeps_inline_tailor_logo(self):
         tailor_with_inline_logo = User.objects.create_user(
             email='inline-tailor@example.com',
