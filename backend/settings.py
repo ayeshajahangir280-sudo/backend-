@@ -131,6 +131,12 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+MEDIA_URL = os.getenv('MEDIA_URL', '/media/').strip() or '/media/'
+if not MEDIA_URL.startswith('/'):
+    MEDIA_URL = f'/{MEDIA_URL}'
+if not MEDIA_URL.endswith('/'):
+    MEDIA_URL = f'{MEDIA_URL}/'
+MEDIA_ROOT = BASE_DIR / (os.getenv('MEDIA_ROOT', 'media').strip() or 'media')
 
 CACHES = {
     'default': {

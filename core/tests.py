@@ -1,6 +1,8 @@
 import base64
 import io
+from tempfile import TemporaryDirectory
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -17,6 +19,12 @@ class OrderFlowTests(APITestCase):
         Image.new('RGB', size, color).save(output, format='PNG')
         encoded = base64.b64encode(output.getvalue()).decode('ascii')
         return f'data:image/png;base64,{encoded}'
+
+    @staticmethod
+    def make_uploaded_image_file(name='upload.png', size=(2400, 1800), color=(120, 80, 40)):
+        output = io.BytesIO()
+        Image.new('RGB', size, color).save(output, format='PNG')
+        return SimpleUploadedFile(name, output.getvalue(), content_type='image/png')
 
     def setUp(self):
         self.customer = User.objects.create_user(
@@ -510,35 +518,74 @@ class OrderFlowTests(APITestCase):
 
     def test_backend_silently_optimizes_uploaded_inline_images(self):
         large_inline_image = self.make_inline_image()
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root, MEDIA_URL='/media/'):
+            self.client.force_authenticate(user=self.tailor)
+            design_response = self.client.post(
+                '/api/tailor/designs/',
+                {
+                    'title': 'Compressed Design',
+                    'description': 'Should be optimized on save',
+                    'base_price': '150.00',
+                    'image': large_inline_image,
+                    'images': [large_inline_image],
+                    'compatible_fabrics': [],
+                },
+                format='json',
+            )
+            self.assertEqual(design_response.status_code, status.HTTP_201_CREATED)
+            self.assertTrue(str(design_response.data['image']).startswith('/media/'))
+            self.assertNotIn('data:image', str(design_response.data['image']).lower())
+            self.assertEqual(design_response.data['images'], [design_response.data['image']])
 
-        self.client.force_authenticate(user=self.tailor)
-        design_response = self.client.post(
-            '/api/tailor/designs/',
-            {
-                'title': 'Compressed Design',
-                'description': 'Should be optimized on save',
-                'base_price': '150.00',
-                'image': large_inline_image,
-                'images': [large_inline_image],
-                'compatible_fabrics': [],
-            },
-            format='json',
-        )
-        self.assertEqual(design_response.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(str(design_response.data['image']).startswith('data:image/jpeg;base64,'))
-        self.assertLess(len(design_response.data['image']), len(large_inline_image))
+            setup_response = self.client.patch(
+                '/api/tailor/me/',
+                {
+                    'shop_name': 'Compressed Logo Shop',
+                    'image': large_inline_image,
+                },
+                format='json',
+            )
+            self.assertEqual(setup_response.status_code, status.HTTP_200_OK)
+            self.assertTrue(str(setup_response.data['image']).startswith('/media/'))
+            self.assertNotIn('data:image', str(setup_response.data['image']).lower())
 
-        setup_response = self.client.patch(
-            '/api/tailor/me/',
-            {
-                'shop_name': 'Compressed Logo Shop',
-                'image': large_inline_image,
-            },
-            format='json',
-        )
-        self.assertEqual(setup_response.status_code, status.HTTP_200_OK)
-        self.assertTrue(str(setup_response.data['image']).startswith('data:image/jpeg;base64,'))
-        self.assertLess(len(setup_response.data['image']), len(large_inline_image))
+    def test_backend_accepts_multipart_image_uploads_without_base64_storage(self):
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root, MEDIA_URL='/media/'):
+            self.client.force_authenticate(user=self.customer)
+
+            design_file = self.make_uploaded_image_file(name='customer-design.png')
+            design_response = self.client.post(
+                '/api/designs/',
+                {
+                    'title': 'Multipart Customer Design',
+                    'category': 'Custom',
+                    'description': 'Customer uploaded design',
+                    'base_price': '120.00',
+                    'compatible_fabrics_json': '[]',
+                    'image_file': design_file,
+                },
+                format='multipart',
+            )
+            self.assertEqual(design_response.status_code, status.HTTP_201_CREATED)
+            self.assertTrue(str(design_response.data['image']).startswith('/media/'))
+            self.assertEqual(design_response.data['images'], [design_response.data['image']])
+
+            fabric_file = self.make_uploaded_image_file(name='customer-fabric.png')
+            fabric_response = self.client.post(
+                '/api/fabrics/',
+                {
+                    'material': 'Multipart Cotton',
+                    'color': 'Cream',
+                    'price': '35.00',
+                    'shop': 'Customer Upload',
+                    'description': 'Customer uploaded fabric',
+                    'image_file': fabric_file,
+                },
+                format='multipart',
+            )
+            self.assertEqual(fabric_response.status_code, status.HTTP_201_CREATED)
+            self.assertTrue(str(fabric_response.data['image']).startswith('/media/'))
+            self.assertEqual(fabric_response.data['images'], [fabric_response.data['image']])
 
     @override_settings(MAX_API_REQUEST_BODY_SIZE=1024)
     def test_backend_rejects_oversized_request_bodies_before_processing(self):

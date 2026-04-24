@@ -7,7 +7,7 @@ from django.db.models import Prefetch
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics, permissions, status, viewsets
+from rest_framework import generics, parsers, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -50,6 +50,7 @@ CACHE_VERSION_KEY = 'api-cache-version'
 PUBLIC_CACHE_TTL = 120
 USER_CACHE_TTL = 60
 MAX_CACHEABLE_PAYLOAD_BYTES = 262144
+IMAGE_UPLOAD_PARSER_CLASSES = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
 
 
 TAILOR_STATUS_FLOW = {
@@ -392,6 +393,7 @@ class TailorShopCatalogView(APIView):
 
 class TailorMeView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsTailor]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_profile(self, user):
         profile, _ = TailorProfile.objects.get_or_create(user=user)
@@ -446,6 +448,12 @@ class FabricListView(generics.ListCreateAPIView):
     queryset = Fabric.objects.filter(is_active=True)
     serializer_class = DashboardFabricSerializer
     permission_classes = [permissions.AllowAny]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
+
+    def get_serializer_class(self):
+        if str(getattr(self.request, 'method', '')).upper() == 'POST':
+            return FabricSerializer
+        return DashboardFabricSerializer
 
     def get_queryset(self):
         return (
@@ -488,6 +496,7 @@ class FabricDetailView(generics.RetrieveAPIView):
 class TailorFabricListCreateView(generics.ListCreateAPIView):
     serializer_class = FabricSerializer
     permission_classes = [permissions.IsAuthenticated, IsTailor]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
         return Fabric.objects.filter(uploaded_by=self.request.user).order_by('-created_at')
@@ -523,6 +532,12 @@ class DesignListView(generics.ListCreateAPIView):
     queryset = Design.objects.filter(is_active=True)
     serializer_class = DashboardDesignSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
+
+    def get_serializer_class(self):
+        if str(getattr(self.request, 'method', '')).upper() == 'POST':
+            return DesignSerializer
+        return DashboardDesignSerializer
 
     def get_queryset(self):
         return (
@@ -589,6 +604,7 @@ class DesignDetailView(generics.RetrieveAPIView):
 class TailorDesignListCreateView(generics.ListCreateAPIView):
     serializer_class = DesignSerializer
     permission_classes = [permissions.IsAuthenticated, IsTailor]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
         return Design.objects.filter(uploaded_by=self.request.user).order_by('-created_at')
@@ -1112,6 +1128,7 @@ class AdminDriverViewSet(viewsets.ModelViewSet):
 class AdminFabricViewSet(viewsets.ModelViewSet):
     serializer_class = FabricSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
         return Fabric.objects.only(
@@ -1152,6 +1169,7 @@ class AdminFabricViewSet(viewsets.ModelViewSet):
 class AdminDesignViewSet(viewsets.ModelViewSet):
     serializer_class = DesignSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
         return Design.objects.only(

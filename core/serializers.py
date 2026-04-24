@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import warnings
 from decimal import Decimal
@@ -11,7 +12,7 @@ from PIL import Image, ImageOps
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 
-from .media_storage import MediaStorageError, sync_image_references_to_cloudinary
+from .media_storage import MediaStorageError, sync_image_references_to_cloudinary, sync_uploaded_files_to_storage
 from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User
 
 
@@ -170,6 +171,56 @@ def sync_cloudinary_images_or_raise(primary_image, image_list=None, *, folder, f
         raise serializers.ValidationError({field_name: str(exc)}) from exc
 
 
+def sync_uploaded_files_or_raise(primary_file, file_list=None, *, folder, field_name='image'):
+    try:
+        return sync_uploaded_files_to_storage(primary_file, file_list or [], folder=folder)
+    except MediaStorageError as exc:
+        raise serializers.ValidationError({field_name: str(exc)}) from exc
+
+
+def get_request_list(request, field_name):
+    if request is None:
+        return None
+
+    request_data = getattr(request, 'data', None)
+    if request_data is None:
+        return None
+
+    if hasattr(request_data, 'getlist'):
+        values = [item for item in request_data.getlist(field_name) if str(item).strip()]
+        if values:
+            return values
+
+    json_candidate = request_data.get(f'{field_name}_json')
+    if json_candidate not in (None, ''):
+        try:
+            parsed = json.loads(json_candidate)
+        except (TypeError, ValueError):
+            return [json_candidate]
+        if isinstance(parsed, list):
+            return parsed
+        return [parsed]
+
+    value = request_data.get(field_name)
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith('['):
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError):
+                return [stripped]
+            if isinstance(parsed, list):
+                return parsed
+        return [stripped]
+    return [value]
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -307,10 +358,20 @@ class TailorShopSetupSerializer(serializers.Serializer):
 
     def update(self, instance, validated_data):
         user = instance.user
+        request = self.context.get('request')
         user_fields = ('full_name', 'phone', 'address')
         profile_fields = ('shop_name', 'image', 'specialty', 'location', 'eta', 'about', 'bank_name', 'account_title', 'account_number', 'iban')
 
-        if 'image' in validated_data:
+        uploaded_image_file = request.FILES.get('image_file') if request else None
+
+        if uploaded_image_file:
+            validated_data['image'], _ = sync_uploaded_files_or_raise(
+                uploaded_image_file,
+                [uploaded_image_file],
+                folder='tailor-profiles',
+                field_name='image',
+            )
+        elif 'image' in validated_data:
             optimized_image = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
             validated_data['image'], _ = sync_cloudinary_images_or_raise(
                 optimized_image,
@@ -415,6 +476,7 @@ class FabricSerializer(serializers.ModelSerializer):
 
     def _build_normalized_data(self, validated_data, user):
         normalized_data = dict(validated_data)
+        request = self.context.get('request')
 
         material = normalized_data.get('material', '')
         color = normalized_data.get('color', '')
@@ -423,25 +485,40 @@ class FabricSerializer(serializers.ModelSerializer):
         image = normalized_data.get('image', '')
         images = normalized_data.get('images', [])
 
+        request_images = get_request_list(request, 'images')
+        if request_images is not None and not images:
+            images = request_images
+
+        uploaded_primary_file = request.FILES.get('image_file') if request else None
+        uploaded_files = request.FILES.getlist('image_files') if request else []
+
         normalized_data['material'] = material.strip()
         normalized_data['color'] = color.strip()
         normalized_data['shop'] = shop.strip()
         normalized_data['description'] = description.strip()
-        normalized_data['image'] = optimize_inline_image(image.strip(), field_name='image')
-        normalized_data['images'] = optimize_inline_images(images, field_name='images')
+        if uploaded_primary_file or uploaded_files:
+            normalized_data['image'], normalized_data['images'] = sync_uploaded_files_or_raise(
+                uploaded_primary_file,
+                uploaded_files or ([uploaded_primary_file] if uploaded_primary_file else []),
+                folder='fabrics',
+                field_name='images',
+            )
+        else:
+            normalized_data['image'] = optimize_inline_image(image.strip(), field_name='image')
+            normalized_data['images'] = optimize_inline_images(images, field_name='images')
 
-        if normalized_data['image'] and normalized_data['image'] not in normalized_data['images']:
-            normalized_data['images'] = [normalized_data['image'], *normalized_data['images']]
+            if normalized_data['image'] and normalized_data['image'] not in normalized_data['images']:
+                normalized_data['images'] = [normalized_data['image'], *normalized_data['images']]
 
-        if normalized_data['images'] and not normalized_data['image']:
-            normalized_data['image'] = normalized_data['images'][0]
+            if normalized_data['images'] and not normalized_data['image']:
+                normalized_data['image'] = normalized_data['images'][0]
 
-        normalized_data['image'], normalized_data['images'] = sync_cloudinary_images_or_raise(
-            normalized_data['image'],
-            normalized_data['images'],
-            folder='fabrics',
-            field_name='images',
-        )
+            normalized_data['image'], normalized_data['images'] = sync_cloudinary_images_or_raise(
+                normalized_data['image'],
+                normalized_data['images'],
+                folder='fabrics',
+                field_name='images',
+            )
 
         if user and getattr(user, 'is_authenticated', False):
             normalized_data['uploaded_by'] = user
@@ -493,6 +570,7 @@ class FabricSerializer(serializers.ModelSerializer):
 class DesignSerializer(serializers.ModelSerializer):
     category = serializers.CharField(required=False, allow_blank=True)
     images = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
+    compatible_fabrics = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
 
     class Meta:
         model = Design
@@ -529,25 +607,54 @@ class DesignSerializer(serializers.ModelSerializer):
         return representation
 
     def create(self, validated_data):
-        images = optimize_inline_images(validated_data.pop('images', []), field_name='images')
         request = self.context.get('request')
         user = getattr(request, 'user', None)
+        images = validated_data.pop('images', [])
+        request_images = get_request_list(request, 'images')
+        if request_images is not None and not images:
+            images = request_images
+
+        request_compatible_fabrics = get_request_list(request, 'compatible_fabrics')
+        if request_compatible_fabrics is not None:
+            validated_data['compatible_fabrics'] = [
+                str(item).strip() for item in request_compatible_fabrics if str(item).strip()
+            ]
+        elif 'compatible_fabrics' in validated_data:
+            validated_data['compatible_fabrics'] = [
+                str(item).strip() for item in validated_data.get('compatible_fabrics', []) if str(item).strip()
+            ]
 
         validated_data['category'] = (validated_data.get('category') or '').strip() or 'Custom'
-        validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
+        validated_data['title'] = str(validated_data.get('title', '')).strip()
+        validated_data['description'] = str(validated_data.get('description', '')).strip()
+        validated_data['designer'] = str(validated_data.get('designer', '')).strip()
 
-        if validated_data['image'] and validated_data['image'] not in images:
-            images = [validated_data['image'], *images]
+        uploaded_primary_file = request.FILES.get('image_file') if request else None
+        uploaded_files = request.FILES.getlist('image_files') if request else []
 
-        if images and not validated_data.get('image'):
-            validated_data['image'] = images[0]
+        if uploaded_primary_file or uploaded_files:
+            validated_data['image'], images = sync_uploaded_files_or_raise(
+                uploaded_primary_file,
+                uploaded_files or ([uploaded_primary_file] if uploaded_primary_file else []),
+                folder='designs',
+                field_name='images',
+            )
+        else:
+            images = optimize_inline_images(images, field_name='images')
+            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
 
-        validated_data['image'], images = sync_cloudinary_images_or_raise(
-            validated_data['image'],
-            images,
-            folder='designs',
-            field_name='images',
-        )
+            if validated_data['image'] and validated_data['image'] not in images:
+                images = [validated_data['image'], *images]
+
+            if images and not validated_data.get('image'):
+                validated_data['image'] = images[0]
+
+            validated_data['image'], images = sync_cloudinary_images_or_raise(
+                validated_data['image'],
+                images,
+                folder='designs',
+                field_name='images',
+            )
 
         if user and getattr(user, 'is_authenticated', False):
             validated_data['uploaded_by'] = user
@@ -558,9 +665,44 @@ class DesignSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        request = self.context.get('request')
         images = validated_data.pop('images', None)
+        request_images = get_request_list(request, 'images')
+        if request_images is not None and images is None:
+            images = request_images
+
+        request_compatible_fabrics = get_request_list(request, 'compatible_fabrics')
+        if request_compatible_fabrics is not None:
+            validated_data['compatible_fabrics'] = [
+                str(item).strip() for item in request_compatible_fabrics if str(item).strip()
+            ]
+        elif 'compatible_fabrics' in validated_data:
+            validated_data['compatible_fabrics'] = [
+                str(item).strip() for item in validated_data.get('compatible_fabrics', []) if str(item).strip()
+            ]
+
+        if 'title' in validated_data:
+            validated_data['title'] = str(validated_data.get('title', '')).strip()
         if 'category' in validated_data:
             validated_data['category'] = (validated_data.get('category') or '').strip() or instance.category or 'Custom'
+        if 'description' in validated_data:
+            validated_data['description'] = str(validated_data.get('description', '')).strip()
+        if 'designer' in validated_data:
+            validated_data['designer'] = str(validated_data.get('designer', '')).strip()
+
+        uploaded_primary_file = request.FILES.get('image_file') if request else None
+        uploaded_files = request.FILES.getlist('image_files') if request else []
+        if uploaded_primary_file or uploaded_files:
+            synced_image, synced_images = sync_uploaded_files_or_raise(
+                uploaded_primary_file,
+                uploaded_files or ([uploaded_primary_file] if uploaded_primary_file else []),
+                folder='designs',
+                field_name='images',
+            )
+            validated_data['image'] = synced_image
+            validated_data['images'] = synced_images
+            return super().update(instance, validated_data)
+
         if 'image' in validated_data:
             validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
         if images is not None:
