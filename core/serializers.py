@@ -932,7 +932,7 @@ class DashboardTailorSerializer(serializers.ModelSerializer):
         ]
 
     def get_image(self, obj):
-        return get_dashboard_image(obj.image, [])
+        return get_public_image(obj.image, [])
 
 
 class DashboardFabricSerializer(serializers.ModelSerializer):
@@ -944,10 +944,10 @@ class DashboardFabricSerializer(serializers.ModelSerializer):
         fields = ['id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active']
 
     def get_images(self, obj):
-        return [image for image in normalize_image_references(obj.images) if image and not is_inline_image(image)]
+        return get_public_images(obj.image, obj.images)
 
     def get_image(self, obj):
-        return get_dashboard_image(obj.image, self.get_images(obj))
+        return get_public_image(obj.image, self.get_images(obj))
 
 
 class DashboardRecentOrderSerializer(serializers.ModelSerializer):
@@ -980,10 +980,10 @@ class DashboardDesignSerializer(serializers.ModelSerializer):
         ]
 
     def get_images(self, obj):
-        return [image for image in normalize_image_references(obj.images) if image and not is_inline_image(image)]
+        return get_public_images(obj.image, obj.images)
 
     def get_image(self, obj):
-        return get_dashboard_image(obj.image, self.get_images(obj))
+        return get_public_image(obj.image, self.get_images(obj))
 
 
 class DashboardSerializer(serializers.Serializer):
