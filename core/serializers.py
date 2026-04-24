@@ -40,6 +40,15 @@ def validate_inline_image_count(values, field_name):
         })
 
 
+def normalize_image_references(values):
+    normalized_values = []
+    for value in values or []:
+        normalized_value = str(value or '').strip()
+        if normalized_value and normalized_value not in normalized_values:
+            normalized_values.append(normalized_value)
+    return normalized_values
+
+
 def optimize_inline_image(value, *, field_name='image'):
     if not is_inline_image(value):
         return value
@@ -99,30 +108,34 @@ def optimize_inline_images(values, *, field_name='images'):
     validate_inline_image_count(values, field_name)
     return [
         optimize_inline_image(str(value).strip(), field_name=field_name)
-        for value in (values or [])
-        if str(value).strip()
+        for value in normalize_image_references(values)
     ]
 
 
 def get_public_image(primary_image, image_list):
+    primary_image = str(primary_image or '').strip()
+    image_list = normalize_image_references(image_list)
+
     if primary_image and not is_inline_image(primary_image):
         return primary_image
 
-    for image in image_list or []:
+    for image in image_list:
         if image and not is_inline_image(image):
             return image
 
     if primary_image:
         return primary_image
 
-    for image in image_list or []:
+    for image in image_list:
         if image:
             return image
     return ''
 
 
 def get_public_images(primary_image, image_list):
-    public_images = [image for image in (image_list or []) if image and not is_inline_image(image)]
+    primary_image = str(primary_image or '').strip()
+    image_list = normalize_image_references(image_list)
+    public_images = [image for image in image_list if image and not is_inline_image(image)]
     fallback_image = primary_image if primary_image and not is_inline_image(primary_image) else ''
 
     if fallback_image and fallback_image not in public_images:
@@ -131,7 +144,7 @@ def get_public_images(primary_image, image_list):
         return public_images
 
     fallback_images = []
-    for image in [primary_image, *(image_list or [])]:
+    for image in [primary_image, *image_list]:
         if image and image not in fallback_images:
             fallback_images.append(image)
     return fallback_images
@@ -345,7 +358,7 @@ class DriverProfileUpdateSerializer(serializers.Serializer):
 
 
 class FabricSerializer(serializers.ModelSerializer):
-    images = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    images = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
     uploaded_by = serializers.IntegerField(source='uploaded_by_id', read_only=True)
 
     class Meta:
@@ -376,6 +389,9 @@ class FabricSerializer(serializers.ModelSerializer):
         normalized_data['description'] = description.strip()
         normalized_data['image'] = optimize_inline_image(image.strip(), field_name='image')
         normalized_data['images'] = optimize_inline_images(images, field_name='images')
+
+        if normalized_data['image'] and normalized_data['image'] not in normalized_data['images']:
+            normalized_data['images'] = [normalized_data['image'], *normalized_data['images']]
 
         if normalized_data['images'] and not normalized_data['image']:
             normalized_data['image'] = normalized_data['images'][0]
@@ -429,7 +445,7 @@ class FabricSerializer(serializers.ModelSerializer):
 
 class DesignSerializer(serializers.ModelSerializer):
     category = serializers.CharField(required=False, allow_blank=True)
-    images = serializers.ListField(child=serializers.CharField(), required=False, allow_empty=True)
+    images = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
 
     class Meta:
         model = Design
@@ -464,6 +480,9 @@ class DesignSerializer(serializers.ModelSerializer):
         validated_data['category'] = (validated_data.get('category') or '').strip() or 'Custom'
         validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
 
+        if validated_data['image'] and validated_data['image'] not in images:
+            images = [validated_data['image'], *images]
+
         if images and not validated_data.get('image'):
             validated_data['image'] = images[0]
 
@@ -483,6 +502,8 @@ class DesignSerializer(serializers.ModelSerializer):
             validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
         if images is not None:
             validated_data['images'] = optimize_inline_images(images, field_name='images')
+            if validated_data.get('image') and validated_data['image'] not in validated_data['images']:
+                validated_data['images'] = [validated_data['image'], *validated_data['images']]
             if images and not validated_data.get('image'):
                 validated_data['image'] = validated_data['images'][0]
         return super().update(instance, validated_data)

@@ -412,3 +412,42 @@ class OrderFlowTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('too many fields', str(response.json()['detail']).lower())
+
+    def test_backend_normalizes_duplicate_and_blank_image_references(self):
+        self.client.force_authenticate(user=self.tailor)
+        inline_image = self.make_inline_image(size=(100, 100))
+
+        response = self.client.post(
+            '/api/tailor/designs/',
+            {
+                'title': 'Normalized Images',
+                'description': 'Should return clean image arrays',
+                'base_price': '150.00',
+                'image': f'  {inline_image}  ',
+                'images': ['   ', inline_image, inline_image, f'  {inline_image}  '],
+                'compatible_fabrics': [],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['images'], [response.data['image']])
+
+    def test_backend_uses_first_valid_image_when_primary_image_missing(self):
+        design = Design.objects.create(
+            title='Image Fallback Design',
+            category='Custom',
+            description='Uses image list fallback',
+            base_price='15.00',
+            uploaded_by=self.tailor,
+            image='   ',
+            images=['   ', 'https://cdn.example.com/designs/fallback.png', 'https://cdn.example.com/designs/fallback.png'],
+        )
+
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.get('/api/tailor/designs/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = next(item for item in response.data if item['id'] == design.id)
+        self.assertEqual(payload['image'], 'https://cdn.example.com/designs/fallback.png')
+        self.assertEqual(payload['images'], ['https://cdn.example.com/designs/fallback.png'])
