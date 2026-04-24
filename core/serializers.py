@@ -809,7 +809,10 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        allow_inline_fallback = not should_omit_inline_images(self.context)
+        # Private order endpoints should still expose inline uploads so
+        # authenticated customers/tailors can review custom references
+        # even when Cloudinary is not configured yet.
+        allow_inline_fallback = True
         design_images = get_public_images(
             representation.get('design_image'),
             representation.get('design_images'),
@@ -880,7 +883,9 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        allow_inline_fallback = not should_omit_inline_images(self.context)
+        # Tailors need customer-uploaded reference images on order detail
+        # screens, including inline uploads that have not been offloaded.
+        allow_inline_fallback = True
         design_images = get_public_images(
             representation.get('design_image'),
             representation.get('design_images'),
@@ -944,7 +949,7 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         images = get_public_images(
             getattr(design, 'image', ''),
             getattr(design, 'images', []),
-            allow_inline_fallback=False,
+            allow_inline_fallback=True,
         )
         return images[:1]
 
@@ -955,7 +960,7 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         return get_public_image(
             getattr(design, 'image', ''),
             self.get_design_images(obj),
-            allow_inline_fallback=False,
+            allow_inline_fallback=True,
         )
 
     def get_fabric_images(self, obj):
@@ -965,7 +970,7 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         images = get_public_images(
             getattr(fabric, 'image', ''),
             getattr(fabric, 'images', []),
-            allow_inline_fallback=False,
+            allow_inline_fallback=True,
         )
         return images[:1]
 
@@ -976,7 +981,7 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         return get_public_image(
             getattr(fabric, 'image', ''),
             self.get_fabric_images(obj),
-            allow_inline_fallback=False,
+            allow_inline_fallback=True,
         )
 
 

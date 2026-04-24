@@ -153,7 +153,7 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('measurement_id', response.data)
 
-    def test_tailor_endpoints_prefer_public_images_and_omit_inline_fallbacks_on_get(self):
+    def test_tailor_catalog_endpoints_omit_inline_images_but_order_endpoints_keep_private_inline_uploads(self):
         self.client.force_authenticate(user=self.customer)
         order_response = self.client.post(
             '/api/orders/',
@@ -224,10 +224,18 @@ class OrderFlowTests(APITestCase):
 
         updated_orders_response = self.client.get('/api/tailor/orders/')
         self.assertEqual(updated_orders_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(updated_orders_response.data[0]['design_image'], '')
-        self.assertEqual(updated_orders_response.data[0]['fabric_image'], '')
-        self.assertEqual(updated_orders_response.data[0]['design_images'], [])
-        self.assertEqual(updated_orders_response.data[0]['fabric_images'], [])
+        self.assertEqual(updated_orders_response.data[0]['design_image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
+        self.assertEqual(updated_orders_response.data[0]['fabric_image'], 'data:image/png;base64,INLINE_ONLY_FABRIC')
+        self.assertEqual(updated_orders_response.data[0]['design_images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
+        self.assertEqual(updated_orders_response.data[0]['fabric_images'], ['data:image/png;base64,INLINE_ONLY_FABRIC'])
+
+        inline_order_id = updated_orders_response.data[0]['id']
+        detail_response = self.client.get(f'/api/tailor/orders/{inline_order_id}/')
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data['design_image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
+        self.assertEqual(detail_response.data['fabric_image'], 'data:image/png;base64,INLINE_ONLY_FABRIC')
+        self.assertEqual(detail_response.data['design_images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
+        self.assertEqual(detail_response.data['fabric_images'], ['data:image/png;base64,INLINE_ONLY_FABRIC'])
 
     def test_tailor_can_create_design_without_category_field(self):
         self.client.force_authenticate(user=self.tailor)
