@@ -36,6 +36,7 @@ from .serializers import (
     TailorShopCatalogSerializer,
     TailorShopSetupSerializer,
     TailorOrderDetailSerializer,
+    TailorOrderListSerializer,
     TailorProfileSerializer,
     UserSerializer,
     build_auth_payload,
@@ -200,11 +201,59 @@ class CustomerDashboardView(APIView):
             USER_CACHE_TTL,
             lambda: DashboardSerializer(
                 {
-                    'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True).select_related('user')[:10],
-                    'fabrics': Fabric.objects.filter(is_active=True).order_by('-created_at')[:10],
-                    'measurements': MeasurementProfile.objects.filter(customer=request.user)[:10],
-                    'recent_orders': Order.objects.filter(customer=request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver')[:10],
-                    'designs': Design.objects.filter(is_active=True).order_by('-created_at')[:10],
+                    'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True)
+                    .select_related('user')
+                    .only(
+                        'user__id',
+                        'user__full_name',
+                        'specialty',
+                        'location',
+                        'image',
+                        'rating',
+                        'service_price',
+                        'is_featured',
+                        'is_active',
+                    )[:10],
+                    'fabrics': Fabric.objects.filter(is_active=True)
+                    .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
+                    .order_by('-created_at')[:10],
+                    'measurements': MeasurementProfile.objects.filter(customer=request.user).only(
+                        'id',
+                        'name',
+                        'chest',
+                        'waist',
+                        'shoulder',
+                        'sleeve',
+                        'height',
+                        'length',
+                        'is_default',
+                        'created_at',
+                    )[:10],
+                    'recent_orders': Order.objects.filter(customer=request.user)
+                    .select_related('tailor', 'design')
+                    .only(
+                        'id',
+                        'status',
+                        'total',
+                        'created_at',
+                        'tailor__full_name',
+                        'design__title',
+                    )[:10],
+                    'designs': Design.objects.filter(is_active=True)
+                    .only(
+                        'id',
+                        'title',
+                        'category',
+                        'image',
+                        'images',
+                        'description',
+                        'compatible_fabrics',
+                        'designer',
+                        'base_price',
+                        'is_active',
+                        'created_at',
+                    )
+                    .order_by('-created_at')[:10],
                 }
             ).data,
             user_scoped=True,
@@ -528,11 +577,31 @@ class OrderDetailView(generics.RetrieveAPIView):
 
 
 class TailorOrderListView(generics.ListAPIView):
-    serializer_class = OrderSerializer
+    serializer_class = TailorOrderListSerializer
     permission_classes = [permissions.IsAuthenticated, IsTailor]
 
     def get_queryset(self):
-        return Order.objects.filter(tailor=self.request.user).select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery')
+        return (
+            Order.objects.filter(tailor=self.request.user)
+            .select_related('customer', 'design', 'fabric')
+            .only(
+                'id',
+                'customer__full_name',
+                'customer_phone',
+                'design__title',
+                'design__image',
+                'design__images',
+                'fabric__material',
+                'fabric__color',
+                'fabric__image',
+                'fabric__images',
+                'garment_type',
+                'notes',
+                'status',
+                'total',
+                'created_at',
+            )
+        )
 
     def list(self, request, *args, **kwargs):
         return cached_response(

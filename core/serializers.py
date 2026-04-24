@@ -150,6 +150,20 @@ def get_public_images(primary_image, image_list):
     return fallback_images
 
 
+def get_dashboard_image(primary_image, image_list):
+    primary_image = str(primary_image or '').strip()
+    image_list = normalize_image_references(image_list)
+
+    if primary_image and not is_inline_image(primary_image):
+        return primary_image
+
+    for image in image_list:
+        if image and not is_inline_image(image):
+            return image
+
+    return ''
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -799,12 +813,150 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
         return representation
 
 
+class TailorOrderListSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_phone = serializers.CharField(read_only=True)
+    design_name = serializers.CharField(source='design.title', read_only=True)
+    design_image = serializers.SerializerMethodField()
+    design_images = serializers.SerializerMethodField()
+    fabric_name = serializers.CharField(source='fabric.material', read_only=True)
+    fabric_color = serializers.CharField(source='fabric.color', read_only=True)
+    fabric_image = serializers.SerializerMethodField()
+    fabric_images = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            'id',
+            'customer_name',
+            'customer_phone',
+            'design_name',
+            'design_image',
+            'design_images',
+            'fabric_name',
+            'fabric_color',
+            'fabric_image',
+            'fabric_images',
+            'garment_type',
+            'notes',
+            'status',
+            'total',
+            'created_at',
+        ]
+
+    def get_design_images(self, obj):
+        design = getattr(obj, 'design', None)
+        if not design:
+            return []
+        images = get_public_images(getattr(design, 'image', ''), getattr(design, 'images', []))
+        return images[:1]
+
+    def get_design_image(self, obj):
+        design = getattr(obj, 'design', None)
+        if not design:
+            return ''
+        return get_public_image(getattr(design, 'image', ''), self.get_design_images(obj))
+
+    def get_fabric_images(self, obj):
+        fabric = getattr(obj, 'fabric', None)
+        if not fabric:
+            return []
+        images = get_public_images(getattr(fabric, 'image', ''), getattr(fabric, 'images', []))
+        return images[:1]
+
+    def get_fabric_image(self, obj):
+        fabric = getattr(obj, 'fabric', None)
+        if not fabric:
+            return ''
+        return get_public_image(getattr(fabric, 'image', ''), self.get_fabric_images(obj))
+
+
+class DashboardTailorSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='user.id', read_only=True)
+    name = serializers.CharField(source='user.full_name', read_only=True)
+    specialty = serializers.CharField(read_only=True)
+    location = serializers.CharField(read_only=True)
+    image = serializers.SerializerMethodField()
+    rating = serializers.DecimalField(max_digits=3, decimal_places=1, read_only=True)
+    service_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    is_featured = serializers.BooleanField(read_only=True)
+    is_active = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TailorProfile
+        fields = [
+            'id',
+            'name',
+            'specialty',
+            'location',
+            'image',
+            'rating',
+            'service_price',
+            'is_featured',
+            'is_active',
+        ]
+
+    def get_image(self, obj):
+        return get_dashboard_image(obj.image, [])
+
+
+class DashboardFabricSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Fabric
+        fields = ['id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active']
+
+    def get_images(self, obj):
+        return [image for image in normalize_image_references(obj.images) if image and not is_inline_image(image)]
+
+    def get_image(self, obj):
+        return get_dashboard_image(obj.image, self.get_images(obj))
+
+
+class DashboardRecentOrderSerializer(serializers.ModelSerializer):
+    tailor_name = serializers.CharField(source='tailor.full_name', read_only=True)
+    design_name = serializers.CharField(source='design.title', read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ['id', 'tailor_name', 'design_name', 'status', 'total', 'created_at']
+
+
+class DashboardDesignSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Design
+        fields = [
+            'id',
+            'title',
+            'category',
+            'image',
+            'images',
+            'description',
+            'compatible_fabrics',
+            'designer',
+            'base_price',
+            'is_active',
+            'created_at',
+        ]
+
+    def get_images(self, obj):
+        return [image for image in normalize_image_references(obj.images) if image and not is_inline_image(image)]
+
+    def get_image(self, obj):
+        return get_dashboard_image(obj.image, self.get_images(obj))
+
+
 class DashboardSerializer(serializers.Serializer):
-    top_tailors = TailorProfileSerializer(many=True)
-    fabrics = FabricSerializer(many=True)
+    top_tailors = DashboardTailorSerializer(many=True)
+    fabrics = DashboardFabricSerializer(many=True)
     measurements = MeasurementSerializer(many=True)
-    recent_orders = OrderSerializer(many=True)
-    designs = DesignSerializer(many=True)
+    recent_orders = DashboardRecentOrderSerializer(many=True)
+    designs = DashboardDesignSerializer(many=True)
 
 
 class TailorShopCatalogSerializer(serializers.Serializer):

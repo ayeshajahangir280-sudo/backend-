@@ -297,6 +297,30 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
         self.assertEqual(response.data['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
 
+    def test_tailor_order_list_stays_summary_only_for_dashboard_and_lists(self):
+        order = Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='40.00',
+            total='40.00',
+            notes='Keep the cuffs slim.',
+        )
+
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.get('/api/tailor/orders/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data[0]['id'], order.id)
+        self.assertEqual(response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
+        self.assertEqual(response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
+        self.assertNotIn('measurement', response.data[0])
+        self.assertNotIn('delivery', response.data[0])
+
     def test_customer_dashboard_tailor_list_keeps_inline_tailor_logo(self):
         tailor_with_inline_logo = User.objects.create_user(
             email='inline-tailor@example.com',
@@ -321,6 +345,55 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         inline_tailor = next(item for item in response.data if item['id'] == tailor_with_inline_logo.id)
         self.assertEqual(inline_tailor['image'], 'data:image/png;base64,INLINE_TAILOR_LOGO')
+
+    def test_customer_dashboard_omits_inline_catalog_images_and_heavy_order_fields(self):
+        inline_design = Design.objects.create(
+            title='Inline Dashboard Design',
+            category='Custom',
+            description='Should not send base64 to the dashboard',
+            base_price='15.00',
+            image='data:image/png;base64,INLINE_ONLY_DESIGN',
+            images=['data:image/png;base64,INLINE_ONLY_DESIGN'],
+            is_active=True,
+        )
+        inline_fabric = Fabric.objects.create(
+            material='Inline Dashboard Fabric',
+            color='Cream',
+            price='7.00',
+            image='data:image/png;base64,INLINE_ONLY_FABRIC',
+            images=['data:image/png;base64,INLINE_ONLY_FABRIC'],
+            is_active=True,
+        )
+        order = Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=inline_design,
+            fabric=inline_fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            subtotal='47.00',
+            total='47.00',
+        )
+
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get('/api/dashboard/customer/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        dashboard_design = next(item for item in response.data['designs'] if item['id'] == inline_design.id)
+        dashboard_fabric = next(item for item in response.data['fabrics'] if item['id'] == inline_fabric.id)
+        dashboard_order = next(item for item in response.data['recent_orders'] if item['id'] == order.id)
+
+        self.assertEqual(dashboard_design['image'], '')
+        self.assertEqual(dashboard_design['images'], [])
+        self.assertEqual(dashboard_fabric['image'], '')
+        self.assertEqual(dashboard_fabric['images'], [])
+        self.assertNotIn('measurement', dashboard_order)
+        self.assertNotIn('delivery', dashboard_order)
+        self.assertEqual(
+            set(dashboard_order.keys()),
+            {'id', 'tailor_name', 'design_name', 'status', 'total', 'created_at'},
+        )
 
     def test_cache_skips_inline_or_oversized_payloads(self):
         self.assertFalse(should_cache_payload({'image': 'data:image/png;base64,INLINE_BIG_IMAGE'}))
