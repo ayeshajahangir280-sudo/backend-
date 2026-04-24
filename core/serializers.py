@@ -113,7 +113,7 @@ def optimize_inline_images(values, *, field_name='images'):
     ]
 
 
-def get_public_image(primary_image, image_list):
+def get_public_image(primary_image, image_list, *, allow_inline_fallback=True):
     primary_image = str(primary_image or '').strip()
     image_list = normalize_image_references(image_list)
 
@@ -124,16 +124,17 @@ def get_public_image(primary_image, image_list):
         if image and not is_inline_image(image):
             return image
 
-    if primary_image:
-        return primary_image
+    if allow_inline_fallback:
+        if primary_image:
+            return primary_image
 
-    for image in image_list:
-        if image:
-            return image
+        for image in image_list:
+            if image:
+                return image
     return ''
 
 
-def get_public_images(primary_image, image_list):
+def get_public_images(primary_image, image_list, *, allow_inline_fallback=True):
     primary_image = str(primary_image or '').strip()
     image_list = normalize_image_references(image_list)
     public_images = [image for image in image_list if image and not is_inline_image(image)]
@@ -144,25 +145,22 @@ def get_public_images(primary_image, image_list):
     if public_images:
         return public_images
 
-    fallback_images = []
-    for image in [primary_image, *image_list]:
-        if image and image not in fallback_images:
-            fallback_images.append(image)
-    return fallback_images
+    if allow_inline_fallback:
+        fallback_images = []
+        for image in [primary_image, *image_list]:
+            if image and image not in fallback_images:
+                fallback_images.append(image)
+        return fallback_images
+    return []
 
 
 def get_dashboard_image(primary_image, image_list):
-    primary_image = str(primary_image or '').strip()
-    image_list = normalize_image_references(image_list)
+    return get_public_image(primary_image, image_list, allow_inline_fallback=False)
 
-    if primary_image and not is_inline_image(primary_image):
-        return primary_image
 
-    for image in image_list:
-        if image and not is_inline_image(image):
-            return image
-
-    return ''
+def should_omit_inline_images(context):
+    request = (context or {}).get('request')
+    return bool(request and str(getattr(request, 'method', '')).upper() == 'GET')
 
 
 def sync_cloudinary_images_or_raise(primary_image, image_list=None, *, folder, field_name='image'):
@@ -283,7 +281,12 @@ class TailorProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        representation['image'] = get_public_image(representation.get('image', ''), [])
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        representation['image'] = get_public_image(
+            representation.get('image', ''),
+            [],
+            allow_inline_fallback=allow_inline_fallback,
+        )
         return representation
 
 
@@ -396,8 +399,17 @@ class FabricSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        public_images = get_public_images(representation.get('image'), representation.get('images'))
-        representation['image'] = get_public_image(representation.get('image'), public_images)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        public_images = get_public_images(
+            representation.get('image'),
+            representation.get('images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        representation['image'] = get_public_image(
+            representation.get('image'),
+            public_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['images'] = public_images
         return representation
 
@@ -502,8 +514,17 @@ class DesignSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        public_images = get_public_images(representation.get('image'), representation.get('images'))
-        representation['image'] = get_public_image(representation.get('image'), public_images)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        public_images = get_public_images(
+            representation.get('image'),
+            representation.get('images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        representation['image'] = get_public_image(
+            representation.get('image'),
+            public_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['images'] = public_images
         return representation
 
@@ -788,11 +809,28 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
-        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
-        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        design_images = get_public_images(
+            representation.get('design_image'),
+            representation.get('design_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        fabric_images = get_public_images(
+            representation.get('fabric_image'),
+            representation.get('fabric_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        representation['design_image'] = get_public_image(
+            representation.get('design_image'),
+            design_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['design_images'] = design_images
-        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_image'] = get_public_image(
+            representation.get('fabric_image'),
+            fabric_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['fabric_images'] = fabric_images
         return representation
 
@@ -842,11 +880,28 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
-        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
-        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        design_images = get_public_images(
+            representation.get('design_image'),
+            representation.get('design_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        fabric_images = get_public_images(
+            representation.get('fabric_image'),
+            representation.get('fabric_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        representation['design_image'] = get_public_image(
+            representation.get('design_image'),
+            design_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['design_images'] = design_images
-        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_image'] = get_public_image(
+            representation.get('fabric_image'),
+            fabric_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['fabric_images'] = fabric_images
         return representation
 
@@ -886,27 +941,43 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
         design = getattr(obj, 'design', None)
         if not design:
             return []
-        images = get_public_images(getattr(design, 'image', ''), getattr(design, 'images', []))
+        images = get_public_images(
+            getattr(design, 'image', ''),
+            getattr(design, 'images', []),
+            allow_inline_fallback=False,
+        )
         return images[:1]
 
     def get_design_image(self, obj):
         design = getattr(obj, 'design', None)
         if not design:
             return ''
-        return get_public_image(getattr(design, 'image', ''), self.get_design_images(obj))
+        return get_public_image(
+            getattr(design, 'image', ''),
+            self.get_design_images(obj),
+            allow_inline_fallback=False,
+        )
 
     def get_fabric_images(self, obj):
         fabric = getattr(obj, 'fabric', None)
         if not fabric:
             return []
-        images = get_public_images(getattr(fabric, 'image', ''), getattr(fabric, 'images', []))
+        images = get_public_images(
+            getattr(fabric, 'image', ''),
+            getattr(fabric, 'images', []),
+            allow_inline_fallback=False,
+        )
         return images[:1]
 
     def get_fabric_image(self, obj):
         fabric = getattr(obj, 'fabric', None)
         if not fabric:
             return ''
-        return get_public_image(getattr(fabric, 'image', ''), self.get_fabric_images(obj))
+        return get_public_image(
+            getattr(fabric, 'image', ''),
+            self.get_fabric_images(obj),
+            allow_inline_fallback=False,
+        )
 
 
 class PublicTailorSerializer(serializers.ModelSerializer):
@@ -941,7 +1012,7 @@ class PublicTailorSerializer(serializers.ModelSerializer):
         ]
 
     def get_image(self, obj):
-        return get_public_image(obj.image, [])
+        return get_public_image(obj.image, [], allow_inline_fallback=False)
 
 
 class DashboardTailorSerializer(serializers.ModelSerializer):
@@ -970,7 +1041,7 @@ class DashboardTailorSerializer(serializers.ModelSerializer):
         ]
 
     def get_image(self, obj):
-        return get_public_image(obj.image, [])
+        return get_public_image(obj.image, [], allow_inline_fallback=False)
 
 
 class DashboardFabricSerializer(serializers.ModelSerializer):
@@ -982,10 +1053,10 @@ class DashboardFabricSerializer(serializers.ModelSerializer):
         fields = ['id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active']
 
     def get_images(self, obj):
-        return get_public_images(obj.image, obj.images)
+        return get_public_images(obj.image, obj.images, allow_inline_fallback=False)
 
     def get_image(self, obj):
-        return get_public_image(obj.image, self.get_images(obj))
+        return get_public_image(obj.image, self.get_images(obj), allow_inline_fallback=False)
 
 
 class DashboardRecentOrderSerializer(serializers.ModelSerializer):
@@ -1018,10 +1089,10 @@ class DashboardDesignSerializer(serializers.ModelSerializer):
         ]
 
     def get_images(self, obj):
-        return get_public_images(obj.image, obj.images)
+        return get_public_images(obj.image, obj.images, allow_inline_fallback=False)
 
     def get_image(self, obj):
-        return get_public_image(obj.image, self.get_images(obj))
+        return get_public_image(obj.image, self.get_images(obj), allow_inline_fallback=False)
 
 
 class DashboardSerializer(serializers.Serializer):
@@ -1131,11 +1202,28 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        design_images = get_public_images(representation.get('design_image'), representation.get('design_images'))
-        fabric_images = get_public_images(representation.get('fabric_image'), representation.get('fabric_images'))
-        representation['design_image'] = get_public_image(representation.get('design_image'), design_images)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        design_images = get_public_images(
+            representation.get('design_image'),
+            representation.get('design_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        fabric_images = get_public_images(
+            representation.get('fabric_image'),
+            representation.get('fabric_images'),
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        representation['design_image'] = get_public_image(
+            representation.get('design_image'),
+            design_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['design_images'] = design_images
-        representation['fabric_image'] = get_public_image(representation.get('fabric_image'), fabric_images)
+        representation['fabric_image'] = get_public_image(
+            representation.get('fabric_image'),
+            fabric_images,
+            allow_inline_fallback=allow_inline_fallback,
+        )
         representation['fabric_images'] = fabric_images
         return representation
 

@@ -153,7 +153,7 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('measurement_id', response.data)
 
-    def test_tailor_endpoints_return_uploaded_images_even_when_they_are_inline(self):
+    def test_tailor_endpoints_prefer_public_images_and_omit_inline_fallbacks_on_get(self):
         self.client.force_authenticate(user=self.customer)
         order_response = self.client.post(
             '/api/orders/',
@@ -219,15 +219,15 @@ class OrderFlowTests(APITestCase):
         self.client.force_authenticate(user=self.tailor)
         updated_designs_response = self.client.get('/api/tailor/designs/')
         self.assertEqual(updated_designs_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(updated_designs_response.data[0]['image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
-        self.assertEqual(updated_designs_response.data[0]['images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
+        self.assertEqual(updated_designs_response.data[0]['image'], '')
+        self.assertEqual(updated_designs_response.data[0]['images'], [])
 
         updated_orders_response = self.client.get('/api/tailor/orders/')
         self.assertEqual(updated_orders_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(updated_orders_response.data[0]['design_image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
-        self.assertEqual(updated_orders_response.data[0]['fabric_image'], 'data:image/png;base64,INLINE_ONLY_FABRIC')
-        self.assertEqual(updated_orders_response.data[0]['design_images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
-        self.assertEqual(updated_orders_response.data[0]['fabric_images'], ['data:image/png;base64,INLINE_ONLY_FABRIC'])
+        self.assertEqual(updated_orders_response.data[0]['design_image'], '')
+        self.assertEqual(updated_orders_response.data[0]['fabric_image'], '')
+        self.assertEqual(updated_orders_response.data[0]['design_images'], [])
+        self.assertEqual(updated_orders_response.data[0]['fabric_images'], [])
 
     def test_tailor_can_create_design_without_category_field(self):
         self.client.force_authenticate(user=self.tailor)
@@ -396,7 +396,7 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(fresh_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(fresh_response.data), 2)
 
-    def test_customer_dashboard_tailor_list_keeps_inline_tailor_logo(self):
+    def test_customer_dashboard_tailor_list_omits_inline_tailor_logo(self):
         tailor_with_inline_logo = User.objects.create_user(
             email='inline-tailor@example.com',
             password='password123',
@@ -420,7 +420,7 @@ class OrderFlowTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         inline_tailor = next(item for item in response.data['top_tailors'] if item['id'] == tailor_with_inline_logo.id)
-        self.assertEqual(inline_tailor['image'], 'data:image/png;base64,INLINE_TAILOR_LOGO')
+        self.assertEqual(inline_tailor['image'], '')
 
     def test_public_tailor_list_excludes_private_profile_fields(self):
         TailorProfile.objects.filter(user=self.tailor).update(
@@ -446,7 +446,7 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data['image'], 'https://cdn.example.com/fabrics/cotton-white.png')
         self.assertEqual(response.data['images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
 
-    def test_customer_dashboard_returns_inline_catalog_images_and_keeps_order_summary_light(self):
+    def test_customer_dashboard_omits_inline_catalog_images_and_keeps_order_summary_light(self):
         inline_design = Design.objects.create(
             title='Inline Dashboard Design',
             category='Custom',
@@ -484,10 +484,10 @@ class OrderFlowTests(APITestCase):
         dashboard_fabric = next(item for item in response.data['fabrics'] if item['id'] == inline_fabric.id)
         dashboard_order = next(item for item in response.data['recent_orders'] if item['id'] == order.id)
 
-        self.assertEqual(dashboard_design['image'], 'data:image/png;base64,INLINE_ONLY_DESIGN')
-        self.assertEqual(dashboard_design['images'], ['data:image/png;base64,INLINE_ONLY_DESIGN'])
-        self.assertEqual(dashboard_fabric['image'], 'data:image/png;base64,INLINE_ONLY_FABRIC')
-        self.assertEqual(dashboard_fabric['images'], ['data:image/png;base64,INLINE_ONLY_FABRIC'])
+        self.assertEqual(dashboard_design['image'], '')
+        self.assertEqual(dashboard_design['images'], [])
+        self.assertEqual(dashboard_fabric['image'], '')
+        self.assertEqual(dashboard_fabric['images'], [])
         self.assertNotIn('measurement', dashboard_order)
         self.assertNotIn('delivery', dashboard_order)
         self.assertEqual(

@@ -1025,6 +1025,15 @@ class AdminTailorViewSet(viewsets.ModelViewSet):
             )
         )
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'admin-tailors',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
 
 class AdminDriverViewSet(viewsets.ModelViewSet):
     serializer_class = AdminDriverDetailSerializer
@@ -1090,6 +1099,15 @@ class AdminDriverViewSet(viewsets.ModelViewSet):
             )
         )
 
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'admin-drivers',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
+
 
 class AdminFabricViewSet(viewsets.ModelViewSet):
     serializer_class = FabricSerializer
@@ -1108,6 +1126,15 @@ class AdminFabricViewSet(viewsets.ModelViewSet):
             'uploaded_by_id',
             'is_active',
         ).order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'admin-fabrics',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
 
     def perform_create(self, serializer):
         serializer.save()
@@ -1141,6 +1168,15 @@ class AdminDesignViewSet(viewsets.ModelViewSet):
             'is_active',
             'created_at',
         ).order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'admin-designs',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
+        )
 
     def perform_create(self, serializer):
         serializer.save()
@@ -1188,6 +1224,15 @@ class AdminOrderListView(generics.ListAPIView):
                 'delivery__driver_id',
             )
             .order_by('-created_at')
+        )
+
+    def list(self, request, *args, **kwargs):
+        return cached_response(
+            'admin-orders',
+            request,
+            USER_CACHE_TTL,
+            lambda: self.get_serializer(self.get_queryset(), many=True).data,
+            user_scoped=True,
         )
 
 
