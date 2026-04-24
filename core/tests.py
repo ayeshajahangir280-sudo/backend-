@@ -4,6 +4,7 @@ import io
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
+from django.test import override_settings
 
 from .models import Design, Fabric, MeasurementProfile, Order, TailorProfile, User
 from .views import should_cache_payload
@@ -357,3 +358,57 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(setup_response.status_code, status.HTTP_200_OK)
         self.assertTrue(str(setup_response.data['image']).startswith('data:image/jpeg;base64,'))
         self.assertLess(len(setup_response.data['image']), len(large_inline_image))
+
+    @override_settings(MAX_API_REQUEST_BODY_SIZE=1024)
+    def test_backend_rejects_oversized_request_bodies_before_processing(self):
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.post(
+            '/api/tailor/designs/',
+            {
+                'title': 'Too Large',
+                'description': 'Should fail fast',
+                'base_price': '150.00',
+                'image': 'x' * 5000,
+                'compatible_fabrics': [],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        self.assertIn('too large', str(response.json()['detail']).lower())
+
+    def test_backend_rejects_too_many_inline_images(self):
+        large_inline_image = self.make_inline_image(size=(100, 100))
+
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.post(
+            '/api/tailor/designs/',
+            {
+                'title': 'Too Many Images',
+                'description': 'Should not accept more than the image limit',
+                'base_price': '150.00',
+                'images': [large_inline_image] * 7,
+                'compatible_fabrics': [],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('images', response.data)
+
+    @override_settings(MAX_API_FORM_FIELDS=3, DATA_UPLOAD_MAX_NUMBER_FIELDS=3)
+    def test_backend_rejects_requests_with_too_many_fields(self):
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.patch(
+            '/api/tailor/me/',
+            {
+                'shop_name': 'Field Flood Shop',
+                'full_name': 'Tailor User',
+                'phone': '03000000002',
+                'address': 'Tailor Address',
+            },
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('too many fields', str(response.json()['detail']).lower())

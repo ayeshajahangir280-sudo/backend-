@@ -23,6 +23,8 @@ load_env_file(BASE_DIR / '.env')
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-lj$&=)6@*3s+u%m8!&1@=bfm5g--ig4+2=u!g%v^p@l(t46ms7')
 DEBUG = os.getenv('DEBUG', '').strip().lower() in {'1', 'true', 'yes', 'on'}
 ALLOWED_HOSTS = ['*']
+MAX_API_REQUEST_BODY_SIZE = int(os.getenv('MAX_API_REQUEST_BODY_SIZE', 8 * 1024 * 1024))
+MAX_API_FORM_FIELDS = int(os.getenv('MAX_API_FORM_FIELDS', 200))
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -41,6 +43,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.middleware.gzip.GZipMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'core.middleware.RequestSizeLimitMiddleware',
     'core.middleware.PublicCorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -117,6 +120,9 @@ CACHES = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'core.User'
+DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_API_REQUEST_BODY_SIZE
+FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_API_REQUEST_BODY_SIZE
+DATA_UPLOAD_MAX_NUMBER_FIELDS = MAX_API_FORM_FIELDS
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = False
@@ -131,4 +137,5 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
     ),
+    'EXCEPTION_HANDLER': 'core.exceptions.api_exception_handler',
 }

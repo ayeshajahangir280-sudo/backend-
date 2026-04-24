@@ -1,6 +1,7 @@
 import base64
 import io
 import re
+import warnings
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
@@ -20,9 +21,26 @@ def is_inline_image(value):
 INLINE_IMAGE_PATTERN = re.compile(r'^data:(image/[-+.\w]+);base64,(.+)$', re.IGNORECASE | re.DOTALL)
 MAX_INLINE_IMAGE_DIMENSION = 1600
 INLINE_IMAGE_JPEG_QUALITY = 60
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_INLINE_IMAGE_PIXELS = 12_000_000
+MAX_INLINE_IMAGE_COUNT = 6
 
 
-def optimize_inline_image(value):
+def _build_inline_image_size_error(field_name):
+    max_mb = MAX_INLINE_IMAGE_BYTES / (1024 * 1024)
+    return serializers.ValidationError({
+        field_name: f'Inline image is too large. Keep each image under {max_mb:.0f} MB.'
+    })
+
+
+def validate_inline_image_count(values, field_name):
+    if values is not None and len(values) > MAX_INLINE_IMAGE_COUNT:
+        raise serializers.ValidationError({
+            field_name: f'You can upload up to {MAX_INLINE_IMAGE_COUNT} images at a time.'
+        })
+
+
+def optimize_inline_image(value, *, field_name='image'):
     if not is_inline_image(value):
         return value
 
@@ -31,32 +49,59 @@ def optimize_inline_image(value):
         return value
 
     try:
+        encoded_image = match.group(2).strip()
+        estimated_raw_bytes = (len(encoded_image) * 3) // 4
+        if estimated_raw_bytes > MAX_INLINE_IMAGE_BYTES:
+            raise _build_inline_image_size_error(field_name)
+
         raw_bytes = base64.b64decode(match.group(2), validate=True)
-        with Image.open(io.BytesIO(raw_bytes)) as image:
-            image = ImageOps.exif_transpose(image)
-            if image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
-            elif image.mode == 'L':
-                image = image.convert('RGB')
+        if len(raw_bytes) > MAX_INLINE_IMAGE_BYTES:
+            raise _build_inline_image_size_error(field_name)
 
-            image.thumbnail((MAX_INLINE_IMAGE_DIMENSION, MAX_INLINE_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw_bytes)) as image:
+                width, height = image.size
+                if width * height > MAX_INLINE_IMAGE_PIXELS:
+                    raise serializers.ValidationError({
+                        field_name: 'Inline image dimensions are too large. Resize the image and try again.'
+                    })
 
-            output = io.BytesIO()
-            image.save(
-                output,
-                format='JPEG',
-                quality=INLINE_IMAGE_JPEG_QUALITY,
-                optimize=True,
-            )
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in ('RGB', 'L'):
+                    image = image.convert('RGB')
+                elif image.mode == 'L':
+                    image = image.convert('RGB')
+
+                image.thumbnail((MAX_INLINE_IMAGE_DIMENSION, MAX_INLINE_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
+
+                output = io.BytesIO()
+                image.save(
+                    output,
+                    format='JPEG',
+                    quality=INLINE_IMAGE_JPEG_QUALITY,
+                    optimize=True,
+                )
 
         encoded = base64.b64encode(output.getvalue()).decode('ascii')
         return f'data:image/jpeg;base64,{encoded}'
+    except serializers.ValidationError:
+        raise
+    except Image.DecompressionBombWarning:
+        raise serializers.ValidationError({
+            field_name: 'Inline image dimensions are too large. Resize the image and try again.'
+        })
     except Exception:
         return value
 
 
-def optimize_inline_images(values):
-    return [optimize_inline_image(str(value).strip()) for value in (values or []) if str(value).strip()]
+def optimize_inline_images(values, *, field_name='images'):
+    validate_inline_image_count(values, field_name)
+    return [
+        optimize_inline_image(str(value).strip(), field_name=field_name)
+        for value in (values or [])
+        if str(value).strip()
+    ]
 
 
 def get_public_image(primary_image, image_list):
@@ -228,7 +273,7 @@ class TailorShopSetupSerializer(serializers.Serializer):
         profile_fields = ('shop_name', 'image', 'specialty', 'location', 'eta', 'about', 'bank_name', 'account_title', 'account_number', 'iban')
 
         if 'image' in validated_data:
-            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
+            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
 
         for field in user_fields:
             if field in validated_data:
@@ -329,8 +374,8 @@ class FabricSerializer(serializers.ModelSerializer):
         normalized_data['color'] = color.strip()
         normalized_data['shop'] = shop.strip()
         normalized_data['description'] = description.strip()
-        normalized_data['image'] = optimize_inline_image(image.strip())
-        normalized_data['images'] = optimize_inline_images(images)
+        normalized_data['image'] = optimize_inline_image(image.strip(), field_name='image')
+        normalized_data['images'] = optimize_inline_images(images, field_name='images')
 
         if normalized_data['images'] and not normalized_data['image']:
             normalized_data['image'] = normalized_data['images'][0]
@@ -412,12 +457,12 @@ class DesignSerializer(serializers.ModelSerializer):
         return representation
 
     def create(self, validated_data):
-        images = optimize_inline_images(validated_data.pop('images', []))
+        images = optimize_inline_images(validated_data.pop('images', []), field_name='images')
         request = self.context.get('request')
         user = getattr(request, 'user', None)
 
         validated_data['category'] = (validated_data.get('category') or '').strip() or 'Custom'
-        validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
+        validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
 
         if images and not validated_data.get('image'):
             validated_data['image'] = images[0]
@@ -435,9 +480,9 @@ class DesignSerializer(serializers.ModelSerializer):
         if 'category' in validated_data:
             validated_data['category'] = (validated_data.get('category') or '').strip() or instance.category or 'Custom'
         if 'image' in validated_data:
-            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip())
+            validated_data['image'] = optimize_inline_image(str(validated_data.get('image', '')).strip(), field_name='image')
         if images is not None:
-            validated_data['images'] = optimize_inline_images(images)
+            validated_data['images'] = optimize_inline_images(images, field_name='images')
             if images and not validated_data.get('image'):
                 validated_data['image'] = validated_data['images'][0]
         return super().update(instance, validated_data)
