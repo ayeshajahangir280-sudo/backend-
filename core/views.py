@@ -638,7 +638,7 @@ class TailorDesignDetailView(generics.RetrieveDestroyAPIView):
 
 class MeasurementListCreateView(generics.ListCreateAPIView):
     serializer_class = MeasurementSerializer
-    permission_classes = [permissions.IsAuthenticated, IsCustomer]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return MeasurementProfile.objects.filter(customer=self.request.user)
@@ -659,7 +659,7 @@ class MeasurementListCreateView(generics.ListCreateAPIView):
 
 class MeasurementDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = MeasurementSerializer
-    permission_classes = [permissions.IsAuthenticated, IsCustomer]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return MeasurementProfile.objects.filter(customer=self.request.user)
