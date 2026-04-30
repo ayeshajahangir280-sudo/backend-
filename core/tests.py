@@ -291,6 +291,96 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data[0]['design_images'], ['https://cdn.example.com/designs/classic-kandura.png'])
         self.assertEqual(response.data[0]['fabric_images'], ['https://cdn.example.com/fabrics/cotton-white.png'])
 
+    def test_admin_overview_returns_user_counts_and_purchase_insights(self):
+        admin = User.objects.create_superuser(
+            email='admin-overview@example.com',
+            password='password123',
+            full_name='Admin Overview',
+        )
+        driver = User.objects.create_user(
+            email='driver-overview@example.com',
+            password='password123',
+            full_name='Driver Overview',
+            role=User.Role.DRIVER,
+            phone='03000000007',
+            address='Driver Address',
+        )
+        second_customer = User.objects.create_user(
+            email='customer-two@example.com',
+            password='password123',
+            full_name='Customer Two',
+            role=User.Role.CUSTOMER,
+            phone='03000000008',
+            address='Second Customer Address',
+        )
+
+        Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            status=Order.Status.DELIVERED,
+            payment_method=Order.PaymentMethod.CARD,
+            payment_status=Order.PaymentStatus.PAID,
+            subtotal='50.00',
+            total='50.00',
+        )
+        Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            status=Order.Status.RECEIVED,
+            payment_method=Order.PaymentMethod.CARD,
+            payment_status=Order.PaymentStatus.PENDING,
+            subtotal='30.00',
+            total='30.00',
+        )
+        Order.objects.create(
+            customer=second_customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            customer_phone=second_customer.phone,
+            delivery_address=second_customer.address,
+            status=Order.Status.READY,
+            payment_method=Order.PaymentMethod.CASH,
+            payment_status=Order.PaymentStatus.PAID,
+            subtotal='70.00',
+            total='70.00',
+        )
+
+        self.client.force_authenticate(user=admin)
+        response = self.client.get('/api/admin/overview/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['counts']['total_users'], 4)
+        self.assertEqual(response.data['counts']['customers'], 2)
+        self.assertEqual(response.data['counts']['tailors'], 1)
+        self.assertEqual(response.data['counts']['drivers'], 1)
+        self.assertEqual(response.data['counts']['orders'], 3)
+        self.assertEqual(response.data['insights']['orders_today'], 3)
+        self.assertEqual(response.data['insights']['orders_last_7_days'], 3)
+        self.assertEqual(response.data['insights']['orders_last_30_days'], 3)
+        self.assertEqual(response.data['insights']['paid_orders'], 2)
+        self.assertEqual(response.data['insights']['delivered_orders'], 1)
+        self.assertEqual(response.data['insights']['unique_buyers'], 2)
+        self.assertEqual(response.data['insights']['repeat_buyers'], 1)
+        self.assertEqual(response.data['insights']['gross_revenue'], 150.0)
+        self.assertEqual(response.data['insights']['paid_revenue'], 120.0)
+        self.assertEqual(response.data['insights']['average_order_value'], 50.0)
+        self.assertEqual(response.data['insights']['top_payment_method']['label'], 'Card')
+        self.assertEqual(response.data['insights']['top_payment_method']['count'], 2)
+        self.assertEqual(response.data['insights']['top_payment_method']['amount'], 80.0)
+        self.assertTrue(any(item['label'] == 'Received' and item['count'] == 1 for item in response.data['insights']['status_breakdown']))
+        self.assertTrue(any(item['label'] == 'Card' and item['count'] == 2 for item in response.data['insights']['payment_breakdown']))
+
     def test_admin_driver_summary_returns_compact_assignment_payload(self):
         admin = User.objects.create_superuser(
             email='admin-summary@example.com',

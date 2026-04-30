@@ -1,10 +1,10 @@
 import hashlib
 import json
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Prefetch
-from django.db.models import Count
+from django.db.models import Avg, Count, Prefetch, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, parsers, permissions, status, viewsets
@@ -935,23 +935,95 @@ class AdminOverviewView(APIView):
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
-        return cached_response(
-            'admin-overview',
-            request,
-            USER_CACHE_TTL,
-            lambda: {
+        def build_payload():
+            all_orders = Order.objects.all()
+            paid_orders = all_orders.filter(payment_status=Order.PaymentStatus.PAID)
+            today = timezone.localdate()
+            orders_last_7_days = all_orders.filter(created_at__date__gte=today - timedelta(days=6))
+            orders_last_30_days = all_orders.filter(created_at__date__gte=today - timedelta(days=29))
+            status_labels = dict(Order.Status.choices)
+            payment_labels = dict(Order.PaymentMethod.choices)
+
+            gross_revenue = all_orders.aggregate(total=Sum('total'))['total'] or 0
+            paid_revenue = paid_orders.aggregate(total=Sum('total'))['total'] or 0
+            average_order_value = all_orders.aggregate(value=Avg('total'))['value'] or 0
+            average_paid_order_value = paid_orders.aggregate(value=Avg('total'))['value'] or 0
+            payment_breakdown = list(
+                all_orders
+                .values('payment_method')
+                .annotate(count=Count('id'), amount=Sum('total'))
+                .order_by('-count', 'payment_method')
+            )
+            status_breakdown = list(
+                all_orders
+                .values('status')
+                .annotate(count=Count('id'))
+                .order_by('-count', 'status')
+            )
+            top_payment_method = payment_breakdown[0] if payment_breakdown else None
+            unique_buyers = all_orders.values('customer_id').distinct().count()
+            repeat_buyers = (
+                all_orders
+                .values('customer_id')
+                .annotate(order_count=Count('id'))
+                .filter(order_count__gt=1)
+                .count()
+            )
+
+            return {
                 'counts': {
+                    'total_users': User.objects.filter(is_staff=False).count(),
                     'customers': User.objects.filter(role=User.Role.CUSTOMER).count(),
                     'tailors': User.objects.filter(role=User.Role.TAILOR).count(),
                     'drivers': User.objects.filter(role=User.Role.DRIVER).count(),
-                    'orders': Order.objects.count(),
+                    'orders': all_orders.count(),
                     'pending_assignments': Delivery.objects.filter(status=Delivery.Status.PENDING_ASSIGNMENT).count(),
                     'featured_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True).count(),
                     'available_drivers': DriverProfile.objects.filter(is_available=True).count(),
                     'fabrics': Fabric.objects.count(),
                     'designs': Design.objects.count(),
-                }
-            },
+                },
+                'insights': {
+                    'orders_today': all_orders.filter(created_at__date=today).count(),
+                    'orders_last_7_days': orders_last_7_days.count(),
+                    'orders_last_30_days': orders_last_30_days.count(),
+                    'gross_revenue': float(gross_revenue),
+                    'paid_revenue': float(paid_revenue),
+                    'revenue_last_30_days': float(orders_last_30_days.aggregate(total=Sum('total'))['total'] or 0),
+                    'average_order_value': float(average_order_value),
+                    'average_paid_order_value': float(average_paid_order_value),
+                    'paid_orders': paid_orders.count(),
+                    'delivered_orders': all_orders.filter(status=Order.Status.DELIVERED).count(),
+                    'unique_buyers': unique_buyers,
+                    'repeat_buyers': repeat_buyers,
+                    'top_payment_method': {
+                        'label': payment_labels.get(top_payment_method['payment_method'], top_payment_method['payment_method']),
+                        'count': top_payment_method['count'],
+                        'amount': float(top_payment_method['amount'] or 0),
+                    } if top_payment_method else None,
+                    'payment_breakdown': [
+                        {
+                            'label': payment_labels.get(item['payment_method'], item['payment_method']),
+                            'count': item['count'],
+                            'amount': float(item['amount'] or 0),
+                        }
+                        for item in payment_breakdown
+                    ],
+                    'status_breakdown': [
+                        {
+                            'label': status_labels.get(item['status'], item['status']),
+                            'count': item['count'],
+                        }
+                        for item in status_breakdown
+                    ],
+                },
+            }
+
+        return cached_response(
+            'admin-overview',
+            request,
+            USER_CACHE_TTL,
+            build_payload,
             user_scoped=True,
         )
 
