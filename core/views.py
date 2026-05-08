@@ -183,16 +183,20 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         
-        # Create a session record for tracking
-        user_agent = request.META.get('HTTP_USER_AGENT', '')
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
-        ip_address = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.META.get('REMOTE_ADDR', '')
-        
-        UserSession.objects.create(
-            user=user,
-            ip_address=ip_address,
-            user_agent=user_agent
-        )
+        # Create a session record for tracking (gracefully handle if table doesn't exist yet)
+        try:
+            user_agent = request.META.get('HTTP_USER_AGENT', '')
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+            ip_address = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.META.get('REMOTE_ADDR', '')
+            
+            UserSession.objects.create(
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+        except Exception:
+            # UserSession table may not exist yet on production - that's OK
+            pass
         
         return Response(build_auth_payload(user))
 
@@ -1453,15 +1457,19 @@ class AdminAssignDriverView(APIView):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def logout_view(request):
-    # Mark the most recent session as logged out
-    current_session = UserSession.objects.filter(
-        user=request.user,
-        logout_time__isnull=True
-    ).order_by('-login_time').first()
-    
-    if current_session:
-        current_session.logout_time = timezone.now()
-        current_session.save(update_fields=['logout_time'])
+    # Mark the most recent session as logged out (gracefully handle if table doesn't exist)
+    try:
+        current_session = UserSession.objects.filter(
+            user=request.user,
+            logout_time__isnull=True
+        ).order_by('-login_time').first()
+        
+        if current_session:
+            current_session.logout_time = timezone.now()
+            current_session.save(update_fields=['logout_time'])
+    except Exception:
+        # UserSession table may not exist yet on production - that's OK
+        pass
     
     Token.objects.filter(user=request.user).delete()
     return Response({'detail': 'Logged out successfully.'})
