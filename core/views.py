@@ -1080,38 +1080,49 @@ class AdminUsersListView(APIView):
 
     def get(self, request):
         """Get list of all users with their latest session information"""
-        # Get all users
-        users = User.objects.all().order_by('-id')
-        
-        # Prepare user data with session information
-        users_data = []
-        for user in users:
-            # Get the most recent session for this user
-            latest_session = UserSession.objects.filter(user=user).order_by('-login_time').first()
+        try:
+            # Get all users
+            users = User.objects.all().order_by('-id')
             
-            if latest_session:
-                users_data.append({
-                    'id': user.id,
-                    'full_name': user.full_name,
-                    'email': user.email,
-                    'role': user.role,
-                    'login_time': latest_session.login_time,
-                    'logout_time': latest_session.logout_time,
-                })
-            else:
-                users_data.append({
-                    'id': user.id,
-                    'full_name': user.full_name,
-                    'email': user.email,
-                    'role': user.role,
-                    'login_time': None,
-                    'logout_time': None,
-                })
-        
-        return Response({
-            'total_users': User.objects.count(),
-            'users': users_data,
-        })
+            # Prepare user data with session information
+            users_data = []
+            for user in users:
+                try:
+                    # Get the most recent session for this user
+                    latest_session = UserSession.objects.filter(user=user).order_by('-login_time').first()
+                    
+                    if latest_session:
+                        users_data.append({
+                            'id': user.id,
+                            'full_name': user.full_name,
+                            'email': user.email,
+                            'role': user.role,
+                            'login_time': latest_session.login_time,
+                            'logout_time': latest_session.logout_time,
+                        })
+                    else:
+                        users_data.append({
+                            'id': user.id,
+                            'full_name': user.full_name,
+                            'email': user.email,
+                            'role': user.role,
+                            'login_time': None,
+                            'logout_time': None,
+                        })
+                except Exception:
+                    # If UserSession table doesn't exist, return basic user info
+                    users_data.append({
+                        'id': user.id,
+                        'full_name': user.full_name,
+                        'email': user.email,
+                        'role': user.role,
+                        'login_time': None,
+                        'logout_time': None,
+                    })
+            
+            return Response(users_data)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AdminTailorViewSet(viewsets.ModelViewSet):
