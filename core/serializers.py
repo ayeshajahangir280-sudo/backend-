@@ -1420,6 +1420,20 @@ class InvoiceSerializer(serializers.Serializer):
     created_at = serializers.DateTimeField()
 
 
+class UserSessionSerializer(serializers.Serializer):
+    """Serialize user session data for admin panel"""
+    id = serializers.IntegerField()
+    full_name = serializers.CharField()
+    email = serializers.CharField()
+    role = serializers.CharField()
+    login_time = serializers.DateTimeField()
+    logout_time = serializers.DateTimeField(allow_null=True)
+    is_logged_in = serializers.SerializerMethodField()
+
+    def get_is_logged_in(self, obj):
+        return obj.get('logout_time') is None
+
+
 def build_auth_payload(user):
     token, _ = Token.objects.get_or_create(user=user)
     return {

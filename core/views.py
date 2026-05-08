@@ -13,7 +13,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User
+from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User, UserSession
 from .permissions import IsCustomer, IsDriver, IsTailor
 from .serializers import (
     AdminAssignDriverSerializer,
@@ -181,7 +181,20 @@ class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(build_auth_payload(serializer.validated_data['user']))
+        user = serializer.validated_data['user']
+        
+        # Create a session record for tracking
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+        ip_address = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.META.get('REMOTE_ADDR', '')
+        
+        UserSession.objects.create(
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        
+        return Response(build_auth_payload(user))
 
 
 class ProfileView(APIView):
@@ -1062,6 +1075,45 @@ class AdminResetTestDataView(APIView):
         )
 
 
+class AdminUsersListView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def get(self, request):
+        """Get list of all users with their latest session information"""
+        # Get all users
+        users = User.objects.all().order_by('-id')
+        
+        # Prepare user data with session information
+        users_data = []
+        for user in users:
+            # Get the most recent session for this user
+            latest_session = UserSession.objects.filter(user=user).order_by('-login_time').first()
+            
+            if latest_session:
+                users_data.append({
+                    'id': user.id,
+                    'full_name': user.full_name,
+                    'email': user.email,
+                    'role': user.role,
+                    'login_time': latest_session.login_time,
+                    'logout_time': latest_session.logout_time,
+                })
+            else:
+                users_data.append({
+                    'id': user.id,
+                    'full_name': user.full_name,
+                    'email': user.email,
+                    'role': user.role,
+                    'login_time': None,
+                    'logout_time': None,
+                })
+        
+        return Response({
+            'total_users': User.objects.count(),
+            'users': users_data,
+        })
+
+
 class AdminTailorViewSet(viewsets.ModelViewSet):
     serializer_class = AdminTailorDetailSerializer
     permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
@@ -1387,6 +1439,18 @@ class AdminAssignDriverView(APIView):
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def logout_view(request):
+    # Mark the most recent session as logged out
+    current_session = UserSession.objects.filter(
+        user=request.user,
+        logout_time__isnull=True
+    ).order_by('-login_time').first()
+    
+    if current_session:
+        current_session.logout_time = timezone.now()
+        current_session.save(update_fields=['logout_time'])
+    
     Token.objects.filter(user=request.user).delete()
     return Response({'detail': 'Logged out successfully.'})

@@ -55,6 +55,25 @@ class User(AbstractUser):
         return f'{self.full_name} ({self.role})'
 
 
+class UserSession(models.Model):
+    """Tracks user login and logout times for activity monitoring"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sessions')
+    login_time = models.DateTimeField(auto_now_add=True)
+    logout_time = models.DateTimeField(null=True, blank=True)
+    ip_address = models.CharField(max_length=50, blank=True)
+    user_agent = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-login_time']
+        indexes = [
+            models.Index(fields=['user', '-login_time']),
+            models.Index(fields=['-login_time']),
+        ]
+
+    def __str__(self):
+        return f'{self.user.full_name} - {self.login_time}'
+
+
 class TailorProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='tailor_profile')
     specialty = models.CharField(max_length=255, blank=True)
