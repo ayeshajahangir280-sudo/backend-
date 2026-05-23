@@ -79,6 +79,31 @@ ADMIN_STATUS_FLOW = {
     Order.Status.CANCELLED: set(),
 }
 
+DEBUG_TAILOR_SHOP_NAMES = {'Debug Shop', 'Debug Shop Json'}
+DEBUG_DESIGN_TITLES = {'Debug Multipart Design'}
+
+
+def get_public_tailor_queryset():
+    return TailorProfile.objects.filter(is_active=True).exclude(shop_name__in=DEBUG_TAILOR_SHOP_NAMES)
+
+
+def get_public_fabric_queryset():
+    return Fabric.objects.filter(is_active=True).exclude(
+        Q(shop__in=DEBUG_TAILOR_SHOP_NAMES)
+        | Q(uploaded_by__tailor_profile__shop_name__in=DEBUG_TAILOR_SHOP_NAMES)
+    )
+
+
+def get_public_design_queryset():
+    return (
+        Design.objects.filter(Q(is_active=True) | Q(uploaded_by__role=User.Role.TAILOR))
+        .exclude(title__in=DEBUG_DESIGN_TITLES)
+        .exclude(
+            Q(designer__in=DEBUG_TAILOR_SHOP_NAMES)
+            | Q(uploaded_by__tailor_profile__shop_name__in=DEBUG_TAILOR_SHOP_NAMES)
+        )
+    )
+
 
 def get_api_cache_version():
     return cache.get_or_set(CACHE_VERSION_KEY, 1, None)
@@ -230,7 +255,8 @@ class CustomerDashboardView(APIView):
             USER_CACHE_TTL,
             lambda: DashboardSerializer(
                 {
-                    'top_tailors': TailorProfile.objects.filter(is_featured=True, is_active=True)
+                    'top_tailors': get_public_tailor_queryset()
+                    .filter(is_featured=True)
                     .select_related('user')
                     .only(
                         'user__id',
@@ -243,7 +269,7 @@ class CustomerDashboardView(APIView):
                         'is_featured',
                         'is_active',
                     )[:10],
-                    'fabrics': Fabric.objects.filter(is_active=True)
+                    'fabrics': get_public_fabric_queryset()
                     .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
                     .order_by('-created_at')[:10],
                     'measurements': MeasurementProfile.objects.filter(customer=request.user).only(
@@ -268,7 +294,7 @@ class CustomerDashboardView(APIView):
                         'tailor__full_name',
                         'design__title',
                     )[:10],
-                    'designs': Design.objects.filter(is_active=True)
+                    'designs': get_public_design_queryset()
                     .select_related('uploaded_by', 'uploaded_by__tailor_profile')
                     .only(
                         'id',
@@ -300,7 +326,7 @@ class TailorListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = (
-            TailorProfile.objects.filter(is_active=True)
+            get_public_tailor_queryset()
             .select_related('user')
             .only(
                 'user__id',
@@ -332,7 +358,7 @@ class TailorListView(generics.ListAPIView):
 
 class TailorDetailView(generics.RetrieveAPIView):
     queryset = (
-        TailorProfile.objects.filter(is_active=True)
+        get_public_tailor_queryset()
         .select_related('user')
         .only(
             'user__id',
@@ -369,7 +395,7 @@ class TailorShopCatalogView(APIView):
     def get(self, request, pk):
         def build_payload():
             tailor = get_object_or_404(
-                TailorProfile.objects.filter(is_active=True)
+                get_public_tailor_queryset()
                 .select_related('user')
                 .only(
                     'user__id',
@@ -389,10 +415,12 @@ class TailorShopCatalogView(APIView):
             )
             payload = {
                 'tailor': tailor,
-                'fabrics': Fabric.objects.filter(uploaded_by_id=pk, is_active=True)
+                'fabrics': get_public_fabric_queryset()
+                .filter(uploaded_by_id=pk)
                 .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
                 .order_by('-created_at'),
-                'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True)
+                'designs': get_public_design_queryset()
+                .filter(uploaded_by_id=pk)
                 .select_related('uploaded_by', 'uploaded_by__tailor_profile')
                 .only(
                     'id',
@@ -472,7 +500,7 @@ class DriverMeView(APIView):
 
 
 class FabricListView(generics.ListCreateAPIView):
-    queryset = Fabric.objects.filter(is_active=True)
+    queryset = get_public_fabric_queryset()
     serializer_class = DashboardFabricSerializer
     permission_classes = [permissions.AllowAny]
     parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
@@ -505,7 +533,7 @@ class FabricListView(generics.ListCreateAPIView):
 
 class FabricDetailView(generics.RetrieveAPIView):
     queryset = (
-        Fabric.objects.filter(is_active=True)
+        get_public_fabric_queryset()
         .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
     )
     serializer_class = DashboardFabricSerializer
@@ -556,7 +584,7 @@ class TailorFabricDetailView(generics.RetrieveDestroyAPIView):
 
 
 class DesignListView(generics.ListCreateAPIView):
-    queryset = Design.objects.filter(is_active=True)
+    queryset = get_public_design_queryset()
     serializer_class = DashboardDesignSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
@@ -606,7 +634,7 @@ class DesignListView(generics.ListCreateAPIView):
 
 class DesignDetailView(generics.RetrieveAPIView):
     queryset = (
-        Design.objects.filter(is_active=True)
+        get_public_design_queryset()
         .select_related('uploaded_by', 'uploaded_by__tailor_profile')
         .only(
             'id',

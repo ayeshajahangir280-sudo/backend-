@@ -271,6 +271,73 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(catalog_response.status_code, status.HTTP_200_OK)
         self.assertTrue(any(item['id'] == response.data['id'] for item in catalog_response.data['designs']))
 
+    def test_public_catalog_keeps_tailor_owned_designs_visible_even_if_inactive(self):
+        self.tailor_design.is_active = False
+        self.tailor_design.save(update_fields=['is_active'])
+
+        self.client.force_authenticate(user=self.customer)
+
+        catalog_response = self.client.get(f'/api/tailors/{self.tailor.id}/catalog/')
+        self.assertEqual(catalog_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item['id'] == self.tailor_design.id for item in catalog_response.data['designs']))
+
+        design_list_response = self.client.get('/api/designs/')
+        self.assertEqual(design_list_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item['id'] == self.tailor_design.id for item in design_list_response.data))
+
+    def test_public_endpoints_exclude_debug_catalog_records(self):
+        debug_tailor = User.objects.create_user(
+            email='debug-tailor@example.com',
+            password='password123',
+            full_name='Debug Tailor',
+            role=User.Role.TAILOR,
+        )
+        TailorProfile.objects.create(
+            user=debug_tailor,
+            shop_name='Debug Shop',
+            is_active=True,
+            is_featured=True,
+        )
+        Fabric.objects.create(
+            material='Debug Fabric',
+            color='Black',
+            price='4.00',
+            shop='Debug Shop',
+            description='Debug fabric',
+            uploaded_by=debug_tailor,
+            is_active=True,
+        )
+        Design.objects.create(
+            title='Debug Multipart Design',
+            category='Custom',
+            description='Multipart upload check',
+            designer='Debug Shop',
+            uploaded_by=debug_tailor,
+            base_price='123.00',
+            image='https://cdn.example.com/designs/debug.png',
+            images=['https://cdn.example.com/designs/debug.png'],
+            is_active=True,
+        )
+
+        self.client.force_authenticate(user=self.customer)
+
+        tailor_response = self.client.get('/api/tailors/')
+        self.assertEqual(tailor_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(any(item['shop_name'] == 'Debug Shop' for item in tailor_response.data))
+
+        fabric_response = self.client.get('/api/fabrics/')
+        self.assertEqual(fabric_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(any(item['shop'] == 'Debug Shop' for item in fabric_response.data))
+
+        design_response = self.client.get('/api/designs/')
+        self.assertEqual(design_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(any(item['title'] == 'Debug Multipart Design' for item in design_response.data))
+
+        dashboard_response = self.client.get('/api/dashboard/customer/')
+        self.assertEqual(dashboard_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(any(item['id'] == debug_tailor.id for item in dashboard_response.data['top_tailors']))
+        self.assertFalse(any(item['title'] == 'Debug Multipart Design' for item in dashboard_response.data['designs']))
+
     def test_public_design_payload_includes_tailor_identity(self):
         TailorProfile.objects.filter(user=self.tailor).update(shop_name='Tailor Studio')
 
