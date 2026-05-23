@@ -62,8 +62,9 @@ class FabricAdmin(admin.ModelAdmin):
 
 @admin.register(Design)
 class DesignAdmin(admin.ModelAdmin):
-    list_display = ('title', 'category', 'designer', 'base_price', 'is_active')
-    list_filter = ('category', 'is_active')
+    list_display = ('title', 'category', 'designer', 'uploaded_by', 'base_price', 'is_active')
+    list_filter = ('category', 'is_active', 'uploaded_by')
+    search_fields = ('title', 'category', 'designer', 'uploaded_by__full_name', 'uploaded_by__email')
 
 
 class DeliveryInlineForm(forms.ModelForm):

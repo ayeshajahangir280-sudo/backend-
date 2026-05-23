@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Avg, Count, Prefetch, Sum
+from django.db.models import Avg, Count, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, parsers, permissions, status, viewsets
@@ -269,6 +269,7 @@ class CustomerDashboardView(APIView):
                         'design__title',
                     )[:10],
                     'designs': Design.objects.filter(is_active=True)
+                    .select_related('uploaded_by', 'uploaded_by__tailor_profile')
                     .only(
                         'id',
                         'title',
@@ -278,6 +279,10 @@ class CustomerDashboardView(APIView):
                         'description',
                         'compatible_fabrics',
                         'designer',
+                        'uploaded_by__id',
+                        'uploaded_by__role',
+                        'uploaded_by__full_name',
+                        'uploaded_by__tailor_profile__shop_name',
                         'base_price',
                         'is_active',
                         'created_at',
@@ -388,6 +393,7 @@ class TailorShopCatalogView(APIView):
                 .only('id', 'material', 'color', 'price', 'image', 'images', 'shop', 'description', 'is_active')
                 .order_by('-created_at'),
                 'designs': Design.objects.filter(uploaded_by_id=pk, is_active=True)
+                .select_related('uploaded_by', 'uploaded_by__tailor_profile')
                 .only(
                     'id',
                     'title',
@@ -397,6 +403,10 @@ class TailorShopCatalogView(APIView):
                     'description',
                     'compatible_fabrics',
                     'designer',
+                    'uploaded_by__id',
+                    'uploaded_by__role',
+                    'uploaded_by__full_name',
+                    'uploaded_by__tailor_profile__shop_name',
                     'base_price',
                     'is_active',
                     'created_at',
@@ -560,6 +570,7 @@ class DesignListView(generics.ListCreateAPIView):
         return (
             super()
             .get_queryset()
+            .select_related('uploaded_by', 'uploaded_by__tailor_profile')
             .only(
                 'id',
                 'title',
@@ -569,6 +580,10 @@ class DesignListView(generics.ListCreateAPIView):
                 'description',
                 'compatible_fabrics',
                 'designer',
+                'uploaded_by__id',
+                'uploaded_by__role',
+                'uploaded_by__full_name',
+                'uploaded_by__tailor_profile__shop_name',
                 'base_price',
                 'is_active',
                 'created_at',
@@ -592,6 +607,7 @@ class DesignListView(generics.ListCreateAPIView):
 class DesignDetailView(generics.RetrieveAPIView):
     queryset = (
         Design.objects.filter(is_active=True)
+        .select_related('uploaded_by', 'uploaded_by__tailor_profile')
         .only(
             'id',
             'title',
@@ -601,6 +617,10 @@ class DesignDetailView(generics.RetrieveAPIView):
             'description',
             'compatible_fabrics',
             'designer',
+            'uploaded_by__id',
+            'uploaded_by__role',
+            'uploaded_by__full_name',
+            'uploaded_by__tailor_profile__shop_name',
             'base_price',
             'is_active',
             'created_at',
@@ -624,7 +644,11 @@ class TailorDesignListCreateView(generics.ListCreateAPIView):
     parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
-        return Design.objects.filter(uploaded_by=self.request.user).order_by('-created_at')
+        return (
+            Design.objects.filter(uploaded_by=self.request.user)
+            .select_related('uploaded_by', 'uploaded_by__tailor_profile')
+            .order_by('-created_at')
+        )
 
     def list(self, request, *args, **kwargs):
         return cached_response(
@@ -636,7 +660,7 @@ class TailorDesignListCreateView(generics.ListCreateAPIView):
         )
 
     def perform_create(self, serializer):
-        serializer.save()
+        serializer.save(is_active=True)
         invalidate_api_cache()
 
 
@@ -645,7 +669,7 @@ class TailorDesignDetailView(generics.RetrieveDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, IsTailor]
 
     def get_queryset(self):
-        return Design.objects.filter(uploaded_by=self.request.user)
+        return Design.objects.filter(uploaded_by=self.request.user).select_related('uploaded_by', 'uploaded_by__tailor_profile')
 
     def destroy(self, request, *args, **kwargs):
         response = super().destroy(request, *args, **kwargs)
@@ -1311,7 +1335,7 @@ class AdminDesignViewSet(viewsets.ModelViewSet):
     parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get_queryset(self):
-        return Design.objects.only(
+        return Design.objects.select_related('uploaded_by', 'uploaded_by__tailor_profile').only(
             'id',
             'title',
             'category',
@@ -1321,6 +1345,9 @@ class AdminDesignViewSet(viewsets.ModelViewSet):
             'compatible_fabrics',
             'designer',
             'uploaded_by_id',
+            'uploaded_by__role',
+            'uploaded_by__full_name',
+            'uploaded_by__tailor_profile__shop_name',
             'base_price',
             'is_active',
             'created_at',

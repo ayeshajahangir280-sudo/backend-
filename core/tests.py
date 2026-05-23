@@ -262,6 +262,62 @@ class OrderFlowTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['category'], 'Custom')
+        self.assertTrue(response.data['is_active'])
+        self.assertEqual(response.data['uploaded_by'], self.tailor.id)
+        self.assertEqual(response.data['tailor_id'], self.tailor.id)
+
+        self.client.force_authenticate(user=self.customer)
+        catalog_response = self.client.get(f'/api/tailors/{self.tailor.id}/catalog/')
+        self.assertEqual(catalog_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item['id'] == response.data['id'] for item in catalog_response.data['designs']))
+
+    def test_public_design_payload_includes_tailor_identity(self):
+        TailorProfile.objects.filter(user=self.tailor).update(shop_name='Tailor Studio')
+
+        response = self.client.get(f'/api/designs/{self.tailor_design.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['uploaded_by'], self.tailor.id)
+        self.assertEqual(response.data['tailor_id'], self.tailor.id)
+        self.assertEqual(response.data['tailor_name'], self.tailor.full_name)
+        self.assertEqual(response.data['tailor_shop_name'], 'Tailor Studio')
+
+    def test_admin_can_assign_design_to_tailor_shop_catalog(self):
+        admin = User.objects.create_superuser(
+            email='catalog-admin@example.com',
+            password='password123',
+            full_name='Catalog Admin',
+        )
+        TailorProfile.objects.filter(user=self.tailor).update(shop_name='Assigned Shop')
+
+        self.client.force_authenticate(user=admin)
+        create_response = self.client.post(
+            '/api/admin/designs/',
+            {
+                'title': 'Admin Assigned Design',
+                'category': 'Formal',
+                'description': 'Assigned by admin to a tailor shop',
+                'designer': '',
+                'uploaded_by': self.tailor.id,
+                'base_price': '77.00',
+                'image': 'https://cdn.example.com/designs/admin-assigned.png',
+                'images': ['https://cdn.example.com/designs/admin-assigned.png'],
+                'compatible_fabrics': [],
+                'is_active': True,
+            },
+            format='json',
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data['uploaded_by'], self.tailor.id)
+        self.assertEqual(create_response.data['tailor_shop_name'], 'Assigned Shop')
+
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get(f'/api/tailors/{self.tailor.id}/catalog/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        design_ids = {item['id'] for item in response.data['designs']}
+        self.assertIn(self.tailor_design.id, design_ids)
+        self.assertIn(create_response.data['id'], design_ids)
 
     def test_admin_order_list_includes_design_and_fabric_images(self):
         admin = User.objects.create_superuser(

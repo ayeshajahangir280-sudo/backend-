@@ -51,6 +51,17 @@ def normalize_image_references(values):
     return normalized_values
 
 
+def get_design_tailor_identity(design):
+    owner = getattr(design, 'uploaded_by', None)
+    if not owner or getattr(owner, 'role', None) != User.Role.TAILOR:
+        return None, '', ''
+
+    tailor_profile = getattr(owner, 'tailor_profile', None)
+    shop_name = getattr(tailor_profile, 'shop_name', '') or ''
+    full_name = getattr(owner, 'full_name', '') or ''
+    return owner.id, full_name, shop_name
+
+
 def optimize_inline_image(value, *, field_name='image'):
     if not is_inline_image(value):
         return value
@@ -568,9 +579,17 @@ class FabricSerializer(serializers.ModelSerializer):
 
 
 class DesignSerializer(serializers.ModelSerializer):
+    uploaded_by = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(role=User.Role.TAILOR),
+        required=False,
+        allow_null=True,
+    )
     category = serializers.CharField(required=False, allow_blank=True)
     images = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
     compatible_fabrics = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False, allow_empty=True)
+    tailor_id = serializers.SerializerMethodField()
+    tailor_name = serializers.SerializerMethodField()
+    tailor_shop_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Design
@@ -584,11 +603,14 @@ class DesignSerializer(serializers.ModelSerializer):
             'compatible_fabrics',
             'designer',
             'uploaded_by',
+            'tailor_id',
+            'tailor_name',
+            'tailor_shop_name',
             'base_price',
             'is_active',
             'created_at',
         ]
-        read_only_fields = ['uploaded_by', 'created_at']
+        read_only_fields = ['tailor_id', 'tailor_name', 'tailor_shop_name', 'created_at']
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
@@ -606,9 +628,22 @@ class DesignSerializer(serializers.ModelSerializer):
         representation['images'] = public_images
         return representation
 
+    def get_tailor_id(self, obj):
+        tailor_id, _, _ = get_design_tailor_identity(obj)
+        return tailor_id
+
+    def get_tailor_name(self, obj):
+        _, tailor_name, _ = get_design_tailor_identity(obj)
+        return tailor_name
+
+    def get_tailor_shop_name(self, obj):
+        _, _, tailor_shop_name = get_design_tailor_identity(obj)
+        return tailor_shop_name
+
     def create(self, validated_data):
         request = self.context.get('request')
         user = getattr(request, 'user', None)
+        requested_owner = validated_data.get('uploaded_by')
         images = validated_data.pop('images', [])
         request_images = get_request_list(request, 'images')
         if request_images is not None and not images:
@@ -657,19 +692,32 @@ class DesignSerializer(serializers.ModelSerializer):
             )
 
         if user and getattr(user, 'is_authenticated', False):
-            validated_data['uploaded_by'] = user
-            if getattr(user, 'role', None) == User.Role.TAILOR and not validated_data.get('designer'):
-                validated_data['designer'] = getattr(user, 'full_name', '')
+            if getattr(user, 'role', None) == User.Role.TAILOR:
+                validated_data['uploaded_by'] = user
+                if not validated_data.get('designer'):
+                    tailor_profile = getattr(user, 'tailor_profile', None)
+                    validated_data['designer'] = getattr(tailor_profile, 'shop_name', '') or getattr(user, 'full_name', '')
+            elif getattr(user, 'role', None) == User.Role.ADMIN:
+                validated_data['uploaded_by'] = requested_owner
+                if requested_owner and not validated_data.get('designer'):
+                    tailor_profile = getattr(requested_owner, 'tailor_profile', None)
+                    validated_data['designer'] = getattr(tailor_profile, 'shop_name', '') or getattr(requested_owner, 'full_name', '')
+            else:
+                validated_data['uploaded_by'] = user
 
         validated_data['images'] = images
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         request = self.context.get('request')
+        user = getattr(request, 'user', None)
         images = validated_data.pop('images', None)
         request_images = get_request_list(request, 'images')
         if request_images is not None and images is None:
             images = request_images
+
+        if 'uploaded_by' in validated_data and getattr(user, 'role', None) != User.Role.ADMIN:
+            validated_data.pop('uploaded_by')
 
         request_compatible_fabrics = get_request_list(request, 'compatible_fabrics')
         if request_compatible_fabrics is not None:
@@ -689,6 +737,14 @@ class DesignSerializer(serializers.ModelSerializer):
             validated_data['description'] = str(validated_data.get('description', '')).strip()
         if 'designer' in validated_data:
             validated_data['designer'] = str(validated_data.get('designer', '')).strip()
+        elif (
+            getattr(user, 'role', None) == User.Role.ADMIN
+            and 'uploaded_by' in validated_data
+            and validated_data.get('uploaded_by')
+        ):
+            selected_owner = validated_data['uploaded_by']
+            tailor_profile = getattr(selected_owner, 'tailor_profile', None)
+            validated_data['designer'] = getattr(tailor_profile, 'shop_name', '') or getattr(selected_owner, 'full_name', '')
 
         uploaded_primary_file = request.FILES.get('image_file') if request else None
         uploaded_files = request.FILES.getlist('image_files') if request else []
@@ -1216,8 +1272,12 @@ class DashboardRecentOrderSerializer(serializers.ModelSerializer):
 
 
 class DashboardDesignSerializer(serializers.ModelSerializer):
+    uploaded_by = serializers.IntegerField(source='uploaded_by_id', read_only=True)
     image = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
+    tailor_id = serializers.SerializerMethodField()
+    tailor_name = serializers.SerializerMethodField()
+    tailor_shop_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Design
@@ -1230,6 +1290,10 @@ class DashboardDesignSerializer(serializers.ModelSerializer):
             'description',
             'compatible_fabrics',
             'designer',
+            'uploaded_by',
+            'tailor_id',
+            'tailor_name',
+            'tailor_shop_name',
             'base_price',
             'is_active',
             'created_at',
@@ -1240,6 +1304,18 @@ class DashboardDesignSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         return get_public_image(obj.image, self.get_images(obj), allow_inline_fallback=False)
+
+    def get_tailor_id(self, obj):
+        tailor_id, _, _ = get_design_tailor_identity(obj)
+        return tailor_id
+
+    def get_tailor_name(self, obj):
+        _, tailor_name, _ = get_design_tailor_identity(obj)
+        return tailor_name
+
+    def get_tailor_shop_name(self, obj):
+        _, _, tailor_shop_name = get_design_tailor_identity(obj)
+        return tailor_shop_name
 
 
 class DashboardSerializer(serializers.Serializer):
