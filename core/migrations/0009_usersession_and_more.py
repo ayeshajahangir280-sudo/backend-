@@ -5,6 +5,66 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+INDEX_RENAMES = [
+    ('delivery', ['driver', 'status', '-assigned_date'], 'core_delive_driver__5d95cf_idx', 'core_delive_driver__828b4c_idx'),
+    ('design', ['is_active', '-created_at'], 'core_design_is_acti_4bc757_idx', 'core_design_is_acti_d0a0c0_idx'),
+    ('design', ['uploaded_by', 'is_active', '-created_at'], 'core_design_uploade_1fe40d_idx', 'core_design_uploade_cf4fa8_idx'),
+    ('driverprofile', ['is_available'], 'core_driver_is_avai_4409ff_idx', 'core_driver_is_avai_69c9ba_idx'),
+    ('fabric', ['is_active', '-created_at'], 'core_fabric_is_acti_949bb6_idx', 'core_fabric_is_acti_4af4fe_idx'),
+    ('fabric', ['uploaded_by', 'is_active', '-created_at'], 'core_fabric_uploade_8a4ff1_idx', 'core_fabric_uploade_ace87d_idx'),
+    ('measurementprofile', ['customer', 'is_default', '-created_at'], 'core_measur_customer_6c5489_idx', 'core_measur_custome_a97440_idx'),
+    ('order', ['customer', '-created_at'], 'core_order_customer_444fd0_idx', 'core_order_custome_fdf03b_idx'),
+    ('order', ['tailor', '-created_at'], 'core_order_tailor_9be1c2_idx', 'core_order_tailor__9efd93_idx'),
+    ('order', ['tailor', 'status', '-created_at'], 'core_order_tailor_827772_idx', 'core_order_tailor__a48d62_idx'),
+    ('order', ['customer', 'status', '-created_at'], 'core_order_customer_8118c0_idx', 'core_order_custome_38b790_idx'),
+    ('tailorprofile', ['is_active', 'is_featured'], 'core_tailor_is_acti_113877_idx', 'core_tailor_is_acti_b83b92_idx'),
+]
+
+
+def index_exists(schema_editor, table_name, index_name):
+    with schema_editor.connection.cursor() as cursor:
+        constraints = schema_editor.connection.introspection.get_constraints(cursor, table_name)
+    return index_name in constraints
+
+
+def sync_index_names(apps, schema_editor):
+    for model_name, fields, source_name, target_name in INDEX_RENAMES:
+        model = apps.get_model('core', model_name)
+        table_name = model._meta.db_table
+
+        if index_exists(schema_editor, table_name, target_name):
+            continue
+
+        source = models.Index(fields=fields, name=source_name)
+        target = models.Index(fields=fields, name=target_name)
+
+        if index_exists(schema_editor, table_name, source_name):
+            schema_editor.rename_index(model, source, target)
+        else:
+            schema_editor.add_index(model, target)
+
+
+def rename_or_create_indexes(apps, schema_editor):
+    sync_index_names(apps, schema_editor)
+
+
+def restore_old_index_names(apps, schema_editor):
+    for model_name, fields, old_name, new_name in INDEX_RENAMES:
+        model = apps.get_model('core', model_name)
+        table_name = model._meta.db_table
+
+        if index_exists(schema_editor, table_name, old_name):
+            continue
+
+        old_index = models.Index(fields=fields, name=old_name)
+        new_index = models.Index(fields=fields, name=new_name)
+
+        if index_exists(schema_editor, table_name, new_name):
+            schema_editor.rename_index(model, new_index, old_index)
+        else:
+            schema_editor.add_index(model, old_index)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -25,65 +85,72 @@ class Migration(migrations.Migration):
                 'ordering': ['-login_time'],
             },
         ),
-        migrations.RenameIndex(
-            model_name='delivery',
-            new_name='core_delive_driver__828b4c_idx',
-            old_name='core_delive_driver__5d95cf_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='design',
-            new_name='core_design_is_acti_d0a0c0_idx',
-            old_name='core_design_is_acti_4bc757_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='design',
-            new_name='core_design_uploade_cf4fa8_idx',
-            old_name='core_design_uploade_1fe40d_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='driverprofile',
-            new_name='core_driver_is_avai_69c9ba_idx',
-            old_name='core_driver_is_avai_4409ff_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='fabric',
-            new_name='core_fabric_is_acti_4af4fe_idx',
-            old_name='core_fabric_is_acti_949bb6_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='fabric',
-            new_name='core_fabric_uploade_ace87d_idx',
-            old_name='core_fabric_uploade_8a4ff1_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='measurementprofile',
-            new_name='core_measur_custome_a97440_idx',
-            old_name='core_measur_customer_6c5489_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='order',
-            new_name='core_order_custome_fdf03b_idx',
-            old_name='core_order_customer_444fd0_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='order',
-            new_name='core_order_tailor__9efd93_idx',
-            old_name='core_order_tailor_9be1c2_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='order',
-            new_name='core_order_tailor__a48d62_idx',
-            old_name='core_order_tailor_827772_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='order',
-            new_name='core_order_custome_38b790_idx',
-            old_name='core_order_customer_8118c0_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='tailorprofile',
-            new_name='core_tailor_is_acti_b83b92_idx',
-            old_name='core_tailor_is_acti_113877_idx',
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(rename_or_create_indexes, restore_old_index_names),
+            ],
+            state_operations=[
+                migrations.RenameIndex(
+                    model_name='delivery',
+                    new_name='core_delive_driver__828b4c_idx',
+                    old_name='core_delive_driver__5d95cf_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='design',
+                    new_name='core_design_is_acti_d0a0c0_idx',
+                    old_name='core_design_is_acti_4bc757_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='design',
+                    new_name='core_design_uploade_cf4fa8_idx',
+                    old_name='core_design_uploade_1fe40d_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='driverprofile',
+                    new_name='core_driver_is_avai_69c9ba_idx',
+                    old_name='core_driver_is_avai_4409ff_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='fabric',
+                    new_name='core_fabric_is_acti_4af4fe_idx',
+                    old_name='core_fabric_is_acti_949bb6_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='fabric',
+                    new_name='core_fabric_uploade_ace87d_idx',
+                    old_name='core_fabric_uploade_8a4ff1_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='measurementprofile',
+                    new_name='core_measur_custome_a97440_idx',
+                    old_name='core_measur_customer_6c5489_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='order',
+                    new_name='core_order_custome_fdf03b_idx',
+                    old_name='core_order_customer_444fd0_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='order',
+                    new_name='core_order_tailor__9efd93_idx',
+                    old_name='core_order_tailor_9be1c2_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='order',
+                    new_name='core_order_tailor__a48d62_idx',
+                    old_name='core_order_tailor_827772_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='order',
+                    new_name='core_order_custome_38b790_idx',
+                    old_name='core_order_customer_8118c0_idx',
+                ),
+                migrations.RenameIndex(
+                    model_name='tailorprofile',
+                    new_name='core_tailor_is_acti_b83b92_idx',
+                    old_name='core_tailor_is_acti_113877_idx',
+                ),
+            ],
         ),
         migrations.AddField(
             model_name='usersession',
