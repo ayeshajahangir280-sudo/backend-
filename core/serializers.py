@@ -851,7 +851,17 @@ class AdminTailorOrderSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['id', 'customer_name', 'customer_phone', 'status', 'payment_method', 'payment_status', 'total', 'created_at']
+        fields = [
+            'id',
+            'customer_name',
+            'customer_phone',
+            'status',
+            'payment_method',
+            'payment_status',
+            'total',
+            'estimated_completion_date',
+            'created_at',
+        ]
 
 
 class AdminDriverDeliverySummarySerializer(serializers.ModelSerializer):
@@ -929,11 +939,12 @@ class OrderSerializer(serializers.ModelSerializer):
             'delivery_fee',
             'total',
             'delivery_address',
+            'estimated_completion_date',
             'created_at',
             'updated_at',
             'delivery',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'customer']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'customer', 'estimated_completion_date']
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -1076,6 +1087,7 @@ class TailorOrderDetailSerializer(serializers.ModelSerializer):
             'notes',
             'status',
             'total',
+            'estimated_completion_date',
             'created_at',
             'updated_at',
         ]
@@ -1147,6 +1159,7 @@ class TailorOrderListSerializer(serializers.ModelSerializer):
             'notes',
             'status',
             'total',
+            'estimated_completion_date',
             'created_at',
         ]
 
@@ -1278,7 +1291,7 @@ class DashboardRecentOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['id', 'tailor_name', 'design_name', 'status', 'total', 'created_at']
+        fields = ['id', 'tailor_name', 'design_name', 'status', 'total', 'estimated_completion_date', 'created_at']
 
 
 class DashboardDesignSerializer(serializers.ModelSerializer):
@@ -1413,6 +1426,7 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
             'delivery_fee',
             'total',
             'delivery_address',
+            'estimated_completion_date',
             'notes',
             'created_at',
             'assigned_driver_name',

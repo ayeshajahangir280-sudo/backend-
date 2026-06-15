@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import Avg, Count, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import generics, parsers, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -247,6 +248,9 @@ class ProfileView(APIView):
                 update_fields.append(field)
 
         uploaded_image_file = request.FILES.get('image_file') if request else None
+        if not uploaded_image_file and request:
+            uploaded_image_files = request.FILES.getlist('image_files')
+            uploaded_image_file = uploaded_image_files[0] if uploaded_image_files else None
         if uploaded_image_file:
             user.image, _ = sync_uploaded_files_or_raise(
                 uploaded_image_file,
@@ -315,6 +319,7 @@ class CustomerDashboardView(APIView):
                         'id',
                         'status',
                         'total',
+                        'estimated_completion_date',
                         'created_at',
                         'tailor__full_name',
                         'design__title',
@@ -838,6 +843,7 @@ class TailorOrderListView(generics.ListAPIView):
                 'notes',
                 'status',
                 'total',
+                'estimated_completion_date',
                 'created_at',
             )
         )
@@ -862,12 +868,30 @@ class TailorOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
     def patch(self, request, *args, **kwargs):
         order = self.get_object()
         new_status = str(request.data.get('status', '')).strip()
+        estimated_completion_value = str(request.data.get('estimated_completion_date', '')).strip()
 
         if not new_status:
             return Response({'detail': 'Status is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if new_status not in Order.Status.values:
             return Response({'detail': 'Invalid order status.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if estimated_completion_value:
+            estimated_completion_date = parse_date(estimated_completion_value)
+            if estimated_completion_date is None:
+                return Response(
+                    {'detail': 'Estimated completion date must use YYYY-MM-DD format.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            order.estimated_completion_date = estimated_completion_date
+            order.save(update_fields=['estimated_completion_date', 'updated_at'])
+
+        normalized_status = normalize_order_status(new_status)
+        if normalized_status == Order.Status.ACCEPTED and not order.estimated_completion_date:
+            return Response(
+                {'detail': 'Estimated completion date is required before accepting this order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             update_order_status_with_rules(order, new_status, TAILOR_STATUS_FLOW, actor_label='Tailor')
@@ -1455,6 +1479,7 @@ class AdminOrderListView(generics.ListAPIView):
                 'delivery_fee',
                 'total',
                 'delivery_address',
+                'estimated_completion_date',
                 'notes',
                 'created_at',
                 'delivery__driver__full_name',
