@@ -349,6 +349,72 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(response.data['tailor_name'], self.tailor.full_name)
         self.assertEqual(response.data['tailor_shop_name'], 'Tailor Studio')
 
+    def test_customer_profile_returns_and_updates_profile_image(self):
+        self.client.force_authenticate(user=self.customer)
+        get_response = self.client.get('/api/auth/profile/')
+
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+        self.assertIn('image', get_response.data)
+        self.assertEqual(get_response.data['image'], '')
+
+        patch_response = self.client.patch(
+            '/api/auth/profile/',
+            {
+                'full_name': 'Customer Updated',
+                'image': 'https://cdn.example.com/profiles/customer.png',
+            },
+            format='json',
+        )
+
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data['full_name'], 'Customer Updated')
+        self.assertEqual(patch_response.data['image'], 'https://cdn.example.com/profiles/customer.png')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.image, 'https://cdn.example.com/profiles/customer.png')
+
+    def test_customer_dashboard_returns_newest_designs_first(self):
+        older_design = Design.objects.create(
+            title='Older Dashboard Design',
+            category='Formal',
+            description='Older article',
+            base_price='11.00',
+            is_active=True,
+        )
+        newer_design = Design.objects.create(
+            title='Newer Dashboard Design',
+            category='Formal',
+            description='Newer article',
+            base_price='12.00',
+            is_active=True,
+        )
+
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get('/api/dashboard/customer/', HTTP_X_BYPASS_CACHE='1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        design_ids = [item['id'] for item in response.data['designs']]
+        self.assertLess(design_ids.index(newer_design.id), design_ids.index(older_design.id))
+
+    def test_tailor_order_list_includes_delivered_orders_for_history(self):
+        delivered_order = Order.objects.create(
+            customer=self.customer,
+            tailor=self.tailor,
+            design=self.design,
+            fabric=self.fabric,
+            measurement=self.measurement,
+            customer_phone=self.customer.phone,
+            delivery_address=self.customer.address,
+            status=Order.Status.DELIVERED,
+            subtotal='40.00',
+            total='40.00',
+        )
+
+        self.client.force_authenticate(user=self.tailor)
+        response = self.client.get('/api/tailor/orders/', HTTP_X_BYPASS_CACHE='1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item['id'] == delivered_order.id and item['status'] == Order.Status.DELIVERED for item in response.data))
+
     def test_admin_can_assign_design_to_tailor_shop_catalog(self):
         admin = User.objects.create_superuser(
             email='catalog-admin@example.com',

@@ -235,7 +235,17 @@ def get_request_list(request, field_name):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'email', 'full_name', 'phone', 'role', 'address', 'is_staff']
+        fields = ['id', 'email', 'full_name', 'phone', 'role', 'address', 'image', 'is_staff']
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        allow_inline_fallback = not should_omit_inline_images(self.context)
+        representation['image'] = get_public_image(
+            representation.get('image', ''),
+            [],
+            allow_inline_fallback=allow_inline_fallback,
+        )
+        return representation
 
 
 class SignupSerializer(serializers.ModelSerializer):

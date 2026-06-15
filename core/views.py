@@ -44,6 +44,9 @@ from .serializers import (
     TailorProfileSerializer,
     UserSerializer,
     build_auth_payload,
+    optimize_inline_image,
+    sync_cloudinary_images_or_raise,
+    sync_uploaded_files_or_raise,
 )
 
 CACHE_VERSION_KEY = 'api-cache-version'
@@ -228,21 +231,43 @@ class LoginView(APIView):
 
 class ProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = IMAGE_UPLOAD_PARSER_CLASSES
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        return Response(UserSerializer(request.user, context={'request': request}).data)
 
     def patch(self, request):
         user = request.user
         allowed_fields = ('full_name', 'phone', 'address')
+        update_fields = []
 
         for field in allowed_fields:
             if field in request.data:
                 setattr(user, field, str(request.data.get(field, '')).strip())
+                update_fields.append(field)
 
-        user.save(update_fields=[field for field in allowed_fields if field in request.data] or None)
+        uploaded_image_file = request.FILES.get('image_file') if request else None
+        if uploaded_image_file:
+            user.image, _ = sync_uploaded_files_or_raise(
+                uploaded_image_file,
+                [uploaded_image_file],
+                folder='user-profiles',
+                field_name='image',
+            )
+            update_fields.append('image')
+        elif 'image' in request.data:
+            optimized_image = optimize_inline_image(str(request.data.get('image', '')).strip(), field_name='image')
+            user.image, _ = sync_cloudinary_images_or_raise(
+                optimized_image,
+                [],
+                folder='user-profiles',
+                field_name='image',
+            )
+            update_fields.append('image')
+
+        user.save(update_fields=update_fields or None)
         invalidate_api_cache()
-        return Response(UserSerializer(user).data)
+        return Response(UserSerializer(user, context={'request': request}).data)
 
 
 class CustomerDashboardView(APIView):

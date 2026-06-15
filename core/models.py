@@ -40,6 +40,7 @@ class User(AbstractUser):
     phone = models.CharField(max_length=30, blank=True)
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CUSTOMER, db_index=True)
     address = models.TextField(blank=True)
+    image = models.TextField(blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['full_name']
