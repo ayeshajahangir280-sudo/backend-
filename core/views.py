@@ -1,12 +1,14 @@
 import hashlib
 import json
+import logging
 import random
+import smtplib
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.db.models import Avg, Count, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -60,6 +62,7 @@ PUBLIC_CACHE_TTL = 120
 USER_CACHE_TTL = 60
 MAX_CACHEABLE_PAYLOAD_BYTES = 262144
 IMAGE_UPLOAD_PARSER_CLASSES = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
+logger = logging.getLogger(__name__)
 
 
 TAILOR_STATUS_FLOW = {
@@ -245,20 +248,47 @@ class PasswordResetRequestView(APIView):
         user = User.objects.filter(email__iexact=email).first()
 
         if user:
-            PasswordResetOTP.objects.filter(user=user, consumed_at__isnull=True).update(consumed_at=timezone.now())
             otp = f'{random.SystemRandom().randint(0, 999999):06d}'
-            PasswordResetOTP.objects.create(
-                user=user,
-                otp_hash=PasswordResetOTP.hash_otp(otp),
-                expires_at=timezone.now() + timedelta(minutes=getattr(settings, 'PASSWORD_RESET_OTP_EXPIRY_MINUTES', 10)),
-            )
-            send_mail(
-                'Your FASS password reset code',
-                f'Your FASS password reset OTP is {otp}. It expires in {getattr(settings, "PASSWORD_RESET_OTP_EXPIRY_MINUTES", 10)} minutes.',
-                getattr(settings, 'DEFAULT_FROM_EMAIL', None),
-                [user.email],
-                fail_silently=False,
-            )
+            expiry_minutes = getattr(settings, 'PASSWORD_RESET_OTP_EXPIRY_MINUTES', 10)
+
+            email_backend = str(getattr(settings, 'EMAIL_BACKEND', ''))
+            using_smtp = email_backend == 'django.core.mail.backends.smtp.EmailBackend'
+            if using_smtp and (not getattr(settings, 'EMAIL_HOST_USER', '') or not getattr(settings, 'EMAIL_HOST_PASSWORD', '')):
+                logger.error('Password reset email is not configured: EMAIL_HOST_USER or EMAIL_HOST_PASSWORD is missing.')
+                return Response(
+                    {'detail': 'Password reset email is not configured on the server.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            try:
+                with transaction.atomic():
+                    PasswordResetOTP.objects.filter(user=user, consumed_at__isnull=True).update(consumed_at=timezone.now())
+                    PasswordResetOTP.objects.create(
+                        user=user,
+                        otp_hash=PasswordResetOTP.hash_otp(otp),
+                        expires_at=timezone.now() + timedelta(minutes=expiry_minutes),
+                    )
+            except DatabaseError:
+                logger.exception('Password reset OTP database operation failed. Check that migrations are applied.')
+                return Response(
+                    {'detail': 'Password reset is not ready on the server. Please run backend migrations.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            try:
+                send_mail(
+                    'Your FASS password reset code',
+                    f'Your FASS password reset OTP is {otp}. It expires in {expiry_minutes} minutes.',
+                    getattr(settings, 'DEFAULT_FROM_EMAIL', None),
+                    [user.email],
+                    fail_silently=False,
+                )
+            except (smtplib.SMTPException, OSError):
+                logger.exception('Password reset OTP email delivery failed for user id %s.', user.id)
+                return Response(
+                    {'detail': 'Could not send OTP email. Please check the server email settings.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
         return Response({'detail': 'If an account exists for this email, an OTP has been sent.'})
 
