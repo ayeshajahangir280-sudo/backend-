@@ -1,8 +1,11 @@
 import hashlib
 import json
+import random
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
+from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Avg, Count, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
@@ -14,7 +17,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User, UserSession
+from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, PasswordResetOTP, TailorProfile, User, UserSession
 from .permissions import IsCustomer, IsDriver, IsTailor
 from .serializers import (
     AdminAssignDriverSerializer,
@@ -36,6 +39,8 @@ from .serializers import (
     MeasurementSerializer,
     NotificationSerializer,
     OrderSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
     PublicTailorSerializer,
     SignupSerializer,
     TailorShopCatalogSerializer,
@@ -228,6 +233,70 @@ class LoginView(APIView):
             pass
         
         return Response(build_auth_payload(user))
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        user = User.objects.filter(email__iexact=email).first()
+
+        if user:
+            PasswordResetOTP.objects.filter(user=user, consumed_at__isnull=True).update(consumed_at=timezone.now())
+            otp = f'{random.SystemRandom().randint(0, 999999):06d}'
+            PasswordResetOTP.objects.create(
+                user=user,
+                otp_hash=PasswordResetOTP.hash_otp(otp),
+                expires_at=timezone.now() + timedelta(minutes=getattr(settings, 'PASSWORD_RESET_OTP_EXPIRY_MINUTES', 10)),
+            )
+            send_mail(
+                'Your FASS password reset code',
+                f'Your FASS password reset OTP is {otp}. It expires in {getattr(settings, "PASSWORD_RESET_OTP_EXPIRY_MINUTES", 10)} minutes.',
+                getattr(settings, 'DEFAULT_FROM_EMAIL', None),
+                [user.email],
+                fail_silently=False,
+            )
+
+        return Response({'detail': 'If an account exists for this email, an OTP has been sent.'})
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data.get('user')
+        generic_error = {'detail': 'Invalid or expired OTP.'}
+
+        if not user:
+            return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
+
+        reset_otp = (
+            PasswordResetOTP.objects.filter(user=user, consumed_at__isnull=True)
+            .order_by('-created_at')
+            .first()
+        )
+        max_attempts = getattr(settings, 'PASSWORD_RESET_OTP_MAX_ATTEMPTS', 5)
+
+        if not reset_otp or reset_otp.is_expired or reset_otp.attempts >= max_attempts:
+            return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
+
+        if not reset_otp.check_otp(serializer.validated_data['otp']):
+            reset_otp.attempts += 1
+            reset_otp.save(update_fields=['attempts'])
+            return Response(generic_error, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(serializer.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        reset_otp.consumed_at = timezone.now()
+        reset_otp.save(update_fields=['consumed_at'])
+        Token.objects.filter(user=user).delete()
+
+        return Response({'detail': 'Password has been reset successfully.'})
 
 
 class ProfileView(APIView):

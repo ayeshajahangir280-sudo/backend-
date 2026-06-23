@@ -1,15 +1,106 @@
 import base64
 import io
+import re
+from datetime import timedelta
 from tempfile import TemporaryDirectory
 
+from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 from rest_framework import status
 from rest_framework.test import APITestCase
 from django.test import override_settings
+from django.utils import timezone
 
-from .models import Design, Fabric, MeasurementProfile, Order, TailorProfile, User
+from .models import Design, Fabric, MeasurementProfile, Order, PasswordResetOTP, TailorProfile, User
 from .views import should_cache_payload
+
+
+@override_settings(
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    PASSWORD_RESET_OTP_EXPIRY_MINUTES=10,
+    PASSWORD_RESET_OTP_MAX_ATTEMPTS=3,
+)
+class PasswordResetOTPTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='reset@example.com',
+            password='oldpassword123',
+            full_name='Reset User',
+            role=User.Role.CUSTOMER,
+        )
+
+    def test_request_reset_returns_generic_success_for_existing_and_missing_email(self):
+        response = self.client.post('/api/auth/password-reset/request/', {'email': self.user.email}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(PasswordResetOTP.objects.filter(user=self.user).count(), 1)
+
+        missing_response = self.client.post('/api/auth/password-reset/request/', {'email': 'missing@example.com'}, format='json')
+        self.assertEqual(missing_response.status_code, status.HTTP_200_OK)
+
+    def test_correct_otp_resets_password_and_consumes_code(self):
+        response = self.client.post('/api/auth/password-reset/request/', {'email': self.user.email}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        otp_record = PasswordResetOTP.objects.get(user=self.user)
+        self.assertEqual(len(mail.outbox), 1)
+        otp_match = re.search(r'\b(\d{6})\b', mail.outbox[0].body)
+        self.assertIsNotNone(otp_match)
+        otp = otp_match.group(1)
+        self.assertTrue(otp_record.check_otp(otp))
+
+        confirm_response = self.client.post(
+            '/api/auth/password-reset/confirm/',
+            {'email': self.user.email, 'otp': otp, 'new_password': 'newpassword123'},
+            format='json',
+        )
+        self.assertEqual(confirm_response.status_code, status.HTTP_200_OK)
+        otp_record.refresh_from_db()
+        self.assertIsNotNone(otp_record.consumed_at)
+
+        old_login = self.client.post('/api/auth/login/', {'email': self.user.email, 'password': 'oldpassword123'}, format='json')
+        self.assertEqual(old_login.status_code, status.HTTP_400_BAD_REQUEST)
+        new_login = self.client.post('/api/auth/login/', {'email': self.user.email, 'password': 'newpassword123'}, format='json')
+        self.assertEqual(new_login.status_code, status.HTTP_200_OK)
+
+    def test_wrong_expired_and_too_many_attempts_fail(self):
+        otp_record = PasswordResetOTP.objects.create(
+            user=self.user,
+            otp_hash=PasswordResetOTP.hash_otp('123456'),
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        wrong_response = self.client.post(
+            '/api/auth/password-reset/confirm/',
+            {'email': self.user.email, 'otp': '000000', 'new_password': 'newpassword123'},
+            format='json',
+        )
+        self.assertEqual(wrong_response.status_code, status.HTTP_400_BAD_REQUEST)
+        otp_record.refresh_from_db()
+        self.assertEqual(otp_record.attempts, 1)
+
+        otp_record.expires_at = timezone.now() - timedelta(minutes=1)
+        otp_record.save(update_fields=['expires_at'])
+        expired_response = self.client.post(
+            '/api/auth/password-reset/confirm/',
+            {'email': self.user.email, 'otp': '123456', 'new_password': 'newpassword123'},
+            format='json',
+        )
+        self.assertEqual(expired_response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        fresh_record = PasswordResetOTP.objects.create(
+            user=self.user,
+            otp_hash=PasswordResetOTP.hash_otp('654321'),
+            expires_at=timezone.now() + timedelta(minutes=10),
+            attempts=3,
+        )
+        locked_response = self.client.post(
+            '/api/auth/password-reset/confirm/',
+            {'email': self.user.email, 'otp': '654321', 'new_password': 'newpassword123'},
+            format='json',
+        )
+        self.assertEqual(locked_response.status_code, status.HTTP_400_BAD_REQUEST)
+        fresh_record.refresh_from_db()
+        self.assertIsNone(fresh_record.consumed_at)
 
 
 class OrderFlowTests(APITestCase):

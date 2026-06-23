@@ -5,7 +5,7 @@ import re
 import warnings
 from decimal import Decimal
 
-from django.contrib.auth import authenticate
+from django.contrib.auth import authenticate, password_validation
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from PIL import Image, ImageOps
@@ -13,7 +13,7 @@ from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 
 from .media_storage import MediaStorageError, sync_image_references_to_cloudinary, sync_uploaded_files_to_storage
-from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, TailorProfile, User
+from .models import Delivery, Design, DriverProfile, Fabric, MeasurementProfile, Order, PasswordResetOTP, TailorProfile, User
 
 
 def is_inline_image(value):
@@ -315,6 +315,34 @@ class LoginSerializer(serializers.Serializer):
         user = authenticate(username=auth_username, password=password)
         if not user:
             raise serializers.ValidationError('Invalid username/email or password.')
+        attrs['user'] = user
+        return attrs
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return User.objects.normalize_email(value).lower().strip()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(min_length=6, max_length=6)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_email(self, value):
+        return User.objects.normalize_email(value).lower().strip()
+
+    def validate_otp(self, value):
+        if not value.isdigit():
+            raise serializers.ValidationError('OTP must be a 6-digit code.')
+        return value
+
+    def validate(self, attrs):
+        user = User.objects.filter(email__iexact=attrs['email']).first()
+        if user:
+            password_validation.validate_password(attrs['new_password'], user=user)
         attrs['user'] = user
         return attrs
 

@@ -28,6 +28,8 @@ from .views import (
     NotificationListView,
     OrderDetailView,
     OrderListCreateView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
     ProfileView,
     SignupView,
     TailorDetailView,
@@ -52,6 +54,8 @@ router.register('admin/designs', AdminDesignViewSet, basename='admin-designs')
 urlpatterns = [
     path('auth/signup/', SignupView.as_view(), name='signup'),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='password-reset-request'),
+    path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('auth/logout/', logout_view, name='logout'),
     path('auth/profile/', ProfileView.as_view(), name='profile'),
     path('dashboard/customer/', CustomerDashboardView.as_view(), name='customer-dashboard'),

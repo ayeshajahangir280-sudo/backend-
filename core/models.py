@@ -1,6 +1,10 @@
+import hashlib
+
+from django.conf import settings
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class UserManager(BaseUserManager):
@@ -73,6 +77,38 @@ class UserSession(models.Model):
 
     def __str__(self):
         return f'{self.user.full_name} - {self.login_time}'
+
+
+class PasswordResetOTP(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_otps')
+    otp_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at'], name='core_passwo_user_id_c4658e_idx'),
+            models.Index(fields=['expires_at'], name='core_passwo_expires_39b49d_idx'),
+        ]
+
+    @staticmethod
+    def hash_otp(otp):
+        secret = str(getattr(settings, 'SECRET_KEY', ''))
+        return hashlib.sha256(f'{secret}:{str(otp).strip()}'.encode('utf-8')).hexdigest()
+
+    def check_otp(self, otp):
+        return self.otp_hash == self.hash_otp(otp)
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_consumed(self):
+        return self.consumed_at is not None
 
 
 class TailorProfile(models.Model):
