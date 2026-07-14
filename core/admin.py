@@ -87,9 +87,10 @@ class DeliveryInline(admin.StackedInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ('id', 'customer', 'tailor', 'payment_method', 'payment_status', 'status', 'total', 'created_at')
+    list_display = ('id', 'customer', 'tailor', 'payment_method', 'payment_status', 'status', 'total', 'platform_fee', 'tailor_payout', 'created_at')
     list_filter = ('status', 'payment_method', 'payment_status')
-    search_fields = ('customer__full_name', 'tailor__full_name')
+    search_fields = ('customer__full_name', 'tailor__full_name', 'stripe_checkout_session_id', 'stripe_payment_intent_id', 'stripe_refund_id')
+    readonly_fields = ('stripe_checkout_session_id', 'stripe_payment_intent_id', 'stripe_refund_id', 'paid_at', 'refunded_at')
     inlines = [DeliveryInline]
 
 

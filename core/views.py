@@ -4,6 +4,7 @@ import logging
 import random
 import smtplib
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.cache import cache
@@ -11,8 +12,10 @@ from django.core.mail import send_mail
 from django.db import DatabaseError, transaction
 from django.db.models import Avg, Count, Prefetch, Q, Sum
 from django.shortcuts import get_object_or_404
+from django.utils.decorators import method_decorator
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, parsers, permissions, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -63,6 +66,71 @@ USER_CACHE_TTL = 60
 MAX_CACHEABLE_PAYLOAD_BYTES = 262144
 IMAGE_UPLOAD_PARSER_CLASSES = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
 logger = logging.getLogger(__name__)
+ONLINE_PAYMENT_METHODS = {Order.PaymentMethod.CARD, Order.PaymentMethod.WALLET}
+
+
+def get_stripe_module():
+    try:
+        import stripe
+    except ImportError as exc:
+        raise RuntimeError('Stripe dependency is not installed on the backend.') from exc
+
+    secret_key = getattr(settings, 'STRIPE_SECRET_KEY', '')
+    if not secret_key:
+        raise RuntimeError('STRIPE_SECRET_KEY is not configured.')
+
+    stripe.api_key = secret_key
+    return stripe
+
+
+def quantize_money(value):
+    try:
+        return Decimal(str(value or '0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal('0.00')
+
+
+def stripe_amount_from_decimal(value):
+    amount = quantize_money(value)
+    return int((amount * Decimal('100')).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+
+def calculate_platform_fee(total):
+    fee_percent = quantize_money(getattr(settings, 'PLATFORM_FEE_PERCENT', '5'))
+    return (quantize_money(total) * fee_percent / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def apply_paid_state(order, *, payment_intent_id='', checkout_session_id=''):
+    platform_fee = calculate_platform_fee(order.total)
+    order.payment_status = Order.PaymentStatus.PAID
+    if checkout_session_id:
+        order.stripe_checkout_session_id = checkout_session_id
+    if payment_intent_id:
+        order.stripe_payment_intent_id = payment_intent_id
+    order.platform_fee = platform_fee
+    order.tailor_payout = (quantize_money(order.total) - platform_fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    order.paid_at = order.paid_at or timezone.now()
+    order.save(update_fields=[
+        'payment_status',
+        'stripe_checkout_session_id',
+        'stripe_payment_intent_id',
+        'platform_fee',
+        'tailor_payout',
+        'paid_at',
+        'updated_at',
+    ])
+    invalidate_api_cache()
+    return order
+
+
+def apply_refunded_state(order, *, refund_id=''):
+    order.payment_status = Order.PaymentStatus.REFUNDED
+    if refund_id:
+        order.stripe_refund_id = refund_id
+    order.refunded_at = order.refunded_at or timezone.now()
+    order.save(update_fields=['payment_status', 'stripe_refund_id', 'refunded_at', 'updated_at'])
+    invalidate_api_cache()
+    return order
 
 
 TAILOR_STATUS_FLOW = {
@@ -417,6 +485,8 @@ class CustomerDashboardView(APIView):
                     .only(
                         'id',
                         'status',
+                        'payment_method',
+                        'payment_status',
                         'total',
                         'estimated_completion_date',
                         'created_at',
@@ -919,6 +989,208 @@ class OrderDetailView(generics.RetrieveAPIView):
         )
 
 
+class StripeCheckoutSessionView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCustomer]
+
+    @staticmethod
+    def build_redirect_url(base_url, session_placeholder=True):
+        url = str(base_url or '').strip()
+        if not url:
+            return ''
+        placeholder = '{CHECKOUT_SESSION_ID}'
+        if not session_placeholder or placeholder in url:
+            return url
+        separator = '&' if '?' in url else '?'
+        return f'{url}{separator}stripe_session_id={placeholder}'
+
+    def post(self, request):
+        order_id = request.data.get('order_id')
+        order = get_object_or_404(
+            Order.objects.select_related('customer', 'tailor', 'design', 'fabric'),
+            pk=order_id,
+            customer=request.user,
+        )
+
+        if order.payment_status == Order.PaymentStatus.PAID:
+            return Response({'detail': 'This order is already paid.'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_status == Order.PaymentStatus.REFUNDED:
+            return Response({'detail': 'This order has already been refunded.'}, status=status.HTTP_400_BAD_REQUEST)
+        if order.payment_method not in ONLINE_PAYMENT_METHODS:
+            return Response({'detail': 'Stripe checkout is only available for card or wallet payments.'}, status=status.HTTP_400_BAD_REQUEST)
+        if stripe_amount_from_decimal(order.total) <= 0:
+            return Response({'detail': 'Order total must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        success_url = self.build_redirect_url(request.data.get('success_url'))
+        cancel_url = self.build_redirect_url(request.data.get('cancel_url'), session_placeholder=False)
+        if not success_url or not cancel_url:
+            return Response({'detail': 'Success and cancel URLs are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            stripe = get_stripe_module()
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        order_title = order.design.title if order.design else f'FASS Order #{order.id}'
+        fabric_label = order.fabric.material if order.fabric else 'Custom fabric'
+        platform_fee = calculate_platform_fee(order.total)
+        tailor_payout = (quantize_money(order.total) - platform_fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        try:
+            checkout_session = stripe.checkout.Session.create(
+                mode='payment',
+                payment_method_types=['card'],
+                customer_email=order.customer.email,
+                client_reference_id=str(order.id),
+                success_url=success_url,
+                cancel_url=cancel_url,
+                line_items=[
+                    {
+                        'quantity': 1,
+                        'price_data': {
+                            'currency': getattr(settings, 'STRIPE_CURRENCY', 'aed'),
+                            'unit_amount': stripe_amount_from_decimal(order.total),
+                            'product_data': {
+                                'name': order_title,
+                                'description': f'{fabric_label} tailoring order with {order.tailor.full_name}',
+                            },
+                        },
+                    }
+                ],
+                metadata={
+                    'order_id': str(order.id),
+                    'customer_id': str(order.customer_id),
+                    'tailor_id': str(order.tailor_id),
+                    'platform_fee': str(platform_fee),
+                    'tailor_payout': str(tailor_payout),
+                },
+                payment_intent_data={
+                    'metadata': {
+                        'order_id': str(order.id),
+                        'customer_id': str(order.customer_id),
+                        'tailor_id': str(order.tailor_id),
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.exception('Stripe checkout session creation failed for order %s.', order.id)
+            return Response({'detail': f'Could not start Stripe checkout: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        order.stripe_checkout_session_id = checkout_session.id
+        order.platform_fee = platform_fee
+        order.tailor_payout = tailor_payout
+        order.save(update_fields=['stripe_checkout_session_id', 'platform_fee', 'tailor_payout', 'updated_at'])
+        invalidate_api_cache()
+
+        return Response({
+            'order_id': order.id,
+            'checkout_session_id': checkout_session.id,
+            'url': checkout_session.url,
+            'publishable_key': getattr(settings, 'STRIPE_PUBLISHABLE_KEY', ''),
+            'payment_status': order.payment_status,
+            'platform_fee': platform_fee,
+            'tailor_payout': tailor_payout,
+        })
+
+
+class StripePaymentStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        session_id = str(request.data.get('checkout_session_id') or request.data.get('stripe_session_id') or '').strip()
+        order_id = request.data.get('order_id')
+
+        queryset = Order.objects.select_related('customer', 'tailor')
+        if request.user.is_staff:
+            order_queryset = queryset
+        else:
+            order_queryset = queryset.filter(Q(customer=request.user) | Q(tailor=request.user))
+
+        order = None
+        if order_id:
+            order = get_object_or_404(order_queryset, pk=order_id)
+        elif session_id:
+            order = get_object_or_404(order_queryset, stripe_checkout_session_id=session_id)
+        else:
+            return Response({'detail': 'Order ID or checkout session ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if session_id:
+            try:
+                stripe = get_stripe_module()
+                session = stripe.checkout.Session.retrieve(session_id)
+            except RuntimeError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            except Exception as exc:
+                logger.exception('Stripe checkout session retrieve failed for %s.', session_id)
+                return Response({'detail': f'Could not verify Stripe payment: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+            if getattr(session, 'payment_status', '') == 'paid':
+                apply_paid_state(
+                    order,
+                    payment_intent_id=str(getattr(session, 'payment_intent', '') or ''),
+                    checkout_session_id=session_id,
+                )
+            elif getattr(session, 'payment_status', '') == 'unpaid' and order.payment_status == Order.PaymentStatus.PENDING:
+                order.payment_status = Order.PaymentStatus.PENDING
+                order.save(update_fields=['payment_status', 'updated_at'])
+
+        refreshed_order = order_queryset.get(pk=order.pk)
+        return Response(OrderSerializer(refreshed_order).data)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class StripeWebhookView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        webhook_secret = getattr(settings, 'STRIPE_WEBHOOK_SECRET', '')
+        if not webhook_secret:
+            return Response({'detail': 'Stripe webhook secret is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        try:
+            stripe = get_stripe_module()
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        signature = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+        try:
+            event = stripe.Webhook.construct_event(request.body, signature, webhook_secret)
+        except ValueError:
+            return Response({'detail': 'Invalid Stripe webhook payload.'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            logger.exception('Stripe webhook signature verification failed.')
+            return Response({'detail': 'Invalid Stripe webhook signature.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        event_type = event.get('type')
+        event_object = event.get('data', {}).get('object', {})
+
+        if event_type == 'checkout.session.completed':
+            order_id = event_object.get('metadata', {}).get('order_id') or event_object.get('client_reference_id')
+            if order_id and event_object.get('payment_status') == 'paid':
+                order = Order.objects.filter(pk=order_id).first()
+                if order:
+                    apply_paid_state(
+                        order,
+                        payment_intent_id=str(event_object.get('payment_intent') or ''),
+                        checkout_session_id=str(event_object.get('id') or ''),
+                    )
+        elif event_type == 'payment_intent.succeeded':
+            order_id = event_object.get('metadata', {}).get('order_id')
+            if order_id:
+                order = Order.objects.filter(pk=order_id).first()
+                if order:
+                    apply_paid_state(order, payment_intent_id=str(event_object.get('id') or ''))
+        elif event_type in {'charge.refunded', 'refund.updated'}:
+            payment_intent_id = str(event_object.get('payment_intent') or '')
+            refund_id = str(event_object.get('id') or '')
+            if payment_intent_id:
+                order = Order.objects.filter(stripe_payment_intent_id=payment_intent_id).first()
+                if order:
+                    apply_refunded_state(order, refund_id=refund_id)
+
+        return Response({'received': True})
+
+
 class TailorOrderListView(generics.ListAPIView):
     serializer_class = TailorOrderListSerializer
     permission_classes = [permissions.IsAuthenticated, IsTailor]
@@ -986,6 +1258,15 @@ class TailorOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
             order.save(update_fields=['estimated_completion_date', 'updated_at'])
 
         normalized_status = normalize_order_status(new_status)
+        if (
+            normalized_status == Order.Status.ACCEPTED
+            and order.payment_method in ONLINE_PAYMENT_METHODS
+            and order.payment_status != Order.PaymentStatus.PAID
+        ):
+            return Response(
+                {'detail': 'Online payment must be completed before accepting this order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if normalized_status == Order.Status.ACCEPTED and not order.estimated_completion_date:
             return Response(
                 {'detail': 'Estimated completion date is required before accepting this order.'},
@@ -1574,11 +1855,18 @@ class AdminOrderListView(generics.ListAPIView):
                 'status',
                 'payment_method',
                 'payment_status',
+                'stripe_checkout_session_id',
+                'stripe_payment_intent_id',
+                'stripe_refund_id',
+                'platform_fee',
+                'tailor_payout',
                 'subtotal',
                 'delivery_fee',
                 'total',
                 'delivery_address',
                 'estimated_completion_date',
+                'paid_at',
+                'refunded_at',
                 'notes',
                 'created_at',
                 'delivery__driver__full_name',
@@ -1619,6 +1907,51 @@ class AdminOrderDetailUpdateView(generics.RetrieveUpdateAPIView):
 
         refreshed_order = self.get_queryset().get(pk=order.pk)
         invalidate_api_cache()
+        return Response(AdminOrderDetailSerializer(refreshed_order).data)
+
+
+class AdminOrderRefundView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+
+    def post(self, request, order_id):
+        order = get_object_or_404(Order.objects.select_related('customer', 'tailor'), pk=order_id)
+
+        if order.payment_status != Order.PaymentStatus.PAID:
+            return Response({'detail': 'Only paid orders can be refunded.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not order.stripe_payment_intent_id:
+            return Response({'detail': 'This order does not have a Stripe payment intent to refund.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        amount_value = request.data.get('amount')
+        refund_kwargs = {
+            'payment_intent': order.stripe_payment_intent_id,
+            'metadata': {
+                'order_id': str(order.id),
+                'customer_id': str(order.customer_id),
+                'tailor_id': str(order.tailor_id),
+                'reason': str(request.data.get('reason') or 'admin_refund')[:500],
+            },
+        }
+        if amount_value not in (None, ''):
+            amount = stripe_amount_from_decimal(amount_value)
+            if amount <= 0:
+                return Response({'detail': 'Refund amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+            if amount > stripe_amount_from_decimal(order.total):
+                return Response({'detail': 'Refund amount cannot exceed the order total.'}, status=status.HTTP_400_BAD_REQUEST)
+            refund_kwargs['amount'] = amount
+
+        try:
+            stripe = get_stripe_module()
+            refund = stripe.Refund.create(**refund_kwargs)
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as exc:
+            logger.exception('Stripe refund failed for order %s.', order.id)
+            return Response({'detail': f'Could not refund Stripe payment: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        if getattr(refund, 'status', '') in {'succeeded', 'pending', 'requires_action'}:
+            apply_refunded_state(order, refund_id=str(getattr(refund, 'id', '') or ''))
+
+        refreshed_order = Order.objects.select_related('customer', 'tailor', 'design', 'fabric', 'measurement', 'delivery', 'delivery__driver').get(pk=order.pk)
         return Response(AdminOrderDetailSerializer(refreshed_order).data)
 
 

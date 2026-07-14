@@ -963,16 +963,37 @@ class OrderSerializer(serializers.ModelSerializer):
             'status',
             'payment_method',
             'payment_status',
+            'stripe_checkout_session_id',
+            'stripe_payment_intent_id',
+            'stripe_refund_id',
+            'platform_fee',
+            'tailor_payout',
             'subtotal',
             'delivery_fee',
             'total',
             'delivery_address',
             'estimated_completion_date',
+            'paid_at',
+            'refunded_at',
             'created_at',
             'updated_at',
             'delivery',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'customer', 'estimated_completion_date']
+        read_only_fields = [
+            'id',
+            'created_at',
+            'updated_at',
+            'customer',
+            'estimated_completion_date',
+            'payment_status',
+            'stripe_checkout_session_id',
+            'stripe_payment_intent_id',
+            'stripe_refund_id',
+            'platform_fee',
+            'tailor_payout',
+            'paid_at',
+            'refunded_at',
+        ]
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -1319,7 +1340,7 @@ class DashboardRecentOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['id', 'tailor_name', 'design_name', 'status', 'total', 'estimated_completion_date', 'created_at']
+        fields = ['id', 'tailor_name', 'design_name', 'status', 'payment_method', 'payment_status', 'total', 'estimated_completion_date', 'created_at']
 
 
 class DashboardDesignSerializer(serializers.ModelSerializer):
@@ -1450,11 +1471,18 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
             'status',
             'payment_method',
             'payment_status',
+            'stripe_checkout_session_id',
+            'stripe_payment_intent_id',
+            'stripe_refund_id',
+            'platform_fee',
+            'tailor_payout',
             'subtotal',
             'delivery_fee',
             'total',
             'delivery_address',
             'estimated_completion_date',
+            'paid_at',
+            'refunded_at',
             'notes',
             'created_at',
             'assigned_driver_name',
