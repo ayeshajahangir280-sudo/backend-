@@ -11,6 +11,7 @@ from django.core.cache import cache
 from django.core.mail import send_mail
 from django.db import DatabaseError, transaction
 from django.db.models import Avg, Count, Prefetch, Q, Sum
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
 from django.utils import timezone
@@ -1135,6 +1136,44 @@ class StripePaymentStatusView(APIView):
 
         refreshed_order = order_queryset.get(pk=order.pk)
         return Response(OrderSerializer(refreshed_order).data)
+
+
+class StripeCheckoutReturnView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        result = str(request.query_params.get('payment') or request.query_params.get('result') or 'success').strip().lower()
+        if result not in {'success', 'cancel'}:
+            result = 'success'
+
+        order_id = str(request.query_params.get('order_id') or request.query_params.get('orderId') or '').strip()
+        session_id = str(request.query_params.get('stripe_session_id') or request.query_params.get('session_id') or '').strip()
+        app_url = f'fass://orders?payment={result}'
+        if order_id:
+            app_url += f'&orderId={order_id}'
+        if session_id:
+            app_url += f'&stripe_session_id={session_id}'
+
+        escaped_app_url = json.dumps(app_url)
+        return HttpResponse(
+            f"""<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Returning to FASS</title>
+  </head>
+  <body style="font-family: Arial, sans-serif; padding: 24px;">
+    <h2>Returning to FASS...</h2>
+    <p>If the app does not open automatically, tap the button below.</p>
+    <p><a href={escaped_app_url} style="display:inline-block;padding:12px 16px;background:#9cc5c9;color:#111;text-decoration:none;border-radius:8px;">Open FASS</a></p>
+    <script>
+      window.location.href = {escaped_app_url};
+    </script>
+  </body>
+</html>""",
+            content_type='text/html',
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
